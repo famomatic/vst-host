@@ -10,13 +10,20 @@ if(MSVC)
     add_compile_options(/permissive- /Zc:__cplusplus /EHsc /O2 /DNDEBUG)
 endif()
 
-add_definitions(-DVST3_SDK)
-
-option(ENABLE_VST2 "Enable VST2 hosting" ON)
+add_definitions(-DVST3_SDK -DENABLE_VST2)
 
 set(JUCE_SUBMODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/JUCE)
 set(VST3_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/VST3_SDK)
 set(VST2_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/vst2sdk)
+
+if (NOT EXISTS "${CMAKE_SOURCE_DIR}/externals/vst2sdk/include/aeffect.h")
+    message(FATAL_ERROR "Xaymar VST2 SDK missing at externals/vst2sdk")
+endif()
+
+include_directories(
+    ${CMAKE_SOURCE_DIR}/externals/VST3_SDK
+    ${CMAKE_SOURCE_DIR}/externals/vst2sdk/include
+)
 
 if(NOT EXISTS ${JUCE_SUBMODULE_DIR}/CMakeLists.txt)
     message(FATAL_ERROR "JUCE submodule not found. Please initialise submodules under externals/JUCE.")

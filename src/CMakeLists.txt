@@ -25,15 +25,11 @@ set(SOURCES
 
 add_executable(VSTHostApp ${SOURCES})
 
-if(ENABLE_VST2)
-    target_compile_definitions(VSTHostApp PRIVATE ENABLE_VST2)
-    target_include_directories(VSTHostApp PRIVATE ${VST2_SDK_DIR}/include)
-endif()
-
 target_include_directories(VSTHostApp
     PRIVATE
         ${SRC_DIR}
         ${VST3_SDK_DIR}
+        ${VST2_SDK_DIR}/include
 )
 
 target_link_libraries(VSTHostApp
