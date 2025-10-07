@@ -185,4 +185,8 @@ void MainWindow::saveProject()
 
     host::persist::Project project;
     project.save(chooser.getResult(), *graphEngine);
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> origin/main
