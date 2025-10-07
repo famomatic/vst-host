@@ -122,6 +122,28 @@ void GraphEngine::connect(NodeId from, NodeId to)
     prepared_ = false;
 }
 
+void GraphEngine::disconnect(NodeId from, NodeId to)
+{
+    if (from == to)
+        return;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (! hasNodeUnlocked(from) || ! hasNodeUnlocked(to))
+        return;
+
+    const auto fromKey = toKey(from);
+    const auto fromIndex = indexById_.at(fromKey);
+    auto& outputs = nodes_[fromIndex].outputs;
+
+    const auto newEnd = std::remove(outputs.begin(), outputs.end(), to);
+    if (newEnd != outputs.end())
+    {
+        outputs.erase(newEnd, outputs.end());
+        prepared_ = false;
+    }
+}
+
 void GraphEngine::setEngineFormat(double sampleRate, int blockSize)
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -193,6 +215,16 @@ std::vector<GraphEngine::NodeId> GraphEngine::getSchedule() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     return schedule_;
+}
+
+std::vector<GraphEngine::NodeId> GraphEngine::getNodeIds() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<NodeId> ids;
+    ids.reserve(nodes_.size());
+    for (const auto& entry : nodes_)
+        ids.push_back(entry.id);
+    return ids;
 }
 
 std::vector<std::pair<GraphEngine::NodeId, GraphEngine::NodeId>> GraphEngine::getConnections() const

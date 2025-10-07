@@ -34,6 +34,11 @@ namespace host::gui
         filterPlugins();
     }
 
+    void PluginBrowser::setOnPluginChosen(std::function<void(const host::plugin::PluginInfo&)> callback)
+    {
+        onPluginChosen = std::move(callback);
+    }
+
     void PluginBrowser::paint(juce::Graphics& g)
     {
         g.fillAll(juce::Colours::darkgrey.darker(0.4f));
@@ -67,6 +72,22 @@ namespace host::gui
         g.drawFittedText(label, bounds.reduced(8), juce::Justification::centredLeft, 1);
     }
 
+    void PluginBrowser::listBoxItemClicked(int row, const juce::MouseEvent& event)
+    {
+        if (event.getNumberOfClicks() > 1)
+            triggerAddPlugin(row);
+    }
+
+    void PluginBrowser::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
+    {
+        triggerAddPlugin(row);
+    }
+
+    void PluginBrowser::returnKeyPressed(int row)
+    {
+        triggerAddPlugin(row);
+    }
+
     void PluginBrowser::changeListenerCallback(juce::ChangeBroadcaster* source)
     {
         if (source == pluginScanner.get())
@@ -90,5 +111,16 @@ namespace host::gui
 
         listBox.updateContent();
         listBox.repaint();
+    }
+
+    void PluginBrowser::triggerAddPlugin(int row)
+    {
+        if (row < 0 || row >= getNumRows())
+            return;
+
+        listBox.selectRow(row);
+
+        if (onPluginChosen)
+            onPluginChosen(filteredPlugins[static_cast<size_t>(row)]);
     }
 }

@@ -31,6 +31,7 @@ private:
     void loadProject();
     void saveProject();
     void rebuildGraphFromProject(const host::persist::Project& project);
+    void addPluginToGraph(const host::plugin::PluginInfo& info);
 
     std::shared_ptr<host::graph::GraphEngine> graphEngine;
     std::shared_ptr<host::plugin::PluginScanner> pluginScanner;

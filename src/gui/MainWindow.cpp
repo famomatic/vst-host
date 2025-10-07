@@ -47,6 +47,10 @@ MainWindow::MainWindow()
     deviceManager.addAudioCallback(&deviceEngine);
 
     pluginBrowser.setScanner(pluginScanner);
+    pluginBrowser.setOnPluginChosen([this](const host::plugin::PluginInfo& info)
+    {
+        addPluginToGraph(info);
+    });
     graphView.setGraph(graphEngine);
 
     leftPanel.addAndMakeVisible(pluginBrowser);
@@ -149,6 +153,7 @@ void MainWindow::initialiseGraph()
     graphEngine->setIO(inputId, outputId);
     graphEngine->connect(inputId, outputId);
     graphEngine->prepare();
+    graphView.refreshGraph(false);
 }
 
 void MainWindow::openPreferences()
@@ -395,13 +400,146 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
     }
 
     graphEngine->prepare();
-    graphView.repaint();
+    graphView.refreshGraph(false);
 
     if (missingPlugins.size() > 0)
     {
         const auto message = "Some plugins could not be loaded:\n" + missingPlugins.joinIntoString("\n");
         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Missing Plugins", message);
     }
+}
+
+void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
+{
+    if (! graphEngine)
+        return;
+
+    host::plugin::PluginInfo pluginInfo = info;
+
+    std::unique_ptr<host::plugin::PluginInstance> instance;
+
+    try
+    {
+        if (pluginInfo.format == host::plugin::PluginFormat::VST2)
+            instance = host::plugin::loadVst2(pluginInfo);
+        else
+            instance = host::plugin::loadVst3(pluginInfo);
+    }
+    catch (const std::exception& e)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               "Load Plugin",
+                                               "Failed to load plugin:\n" + juce::String(e.what()));
+        return;
+    }
+
+    if (! instance)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               "Load Plugin",
+                                               "Could not instantiate the selected plugin.");
+        return;
+    }
+
+    auto node = std::make_unique<host::graph::nodes::VstFxNode>(std::move(instance), pluginInfo.name, pluginInfo);
+    host::graph::GraphEngine::NodeId newNodeId;
+
+    try
+    {
+        newNodeId = graphEngine->addNode(std::move(node));
+    }
+    catch (const std::exception& e)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               "Graph Update",
+                                               "Failed to add plugin node:\n" + juce::String(e.what()));
+        return;
+    }
+
+    const auto inputId = graphEngine->getInputNode();
+    const auto outputId = graphEngine->getOutputNode();
+
+    std::vector<host::graph::GraphEngine::NodeId> previousSources;
+    auto connections = graphEngine->getConnections();
+
+    if (! outputId.isNull())
+    {
+        for (const auto& connection : connections)
+        {
+            if (connection.second == outputId)
+            {
+                previousSources.push_back(connection.first);
+                graphEngine->disconnect(connection.first, connection.second);
+            }
+        }
+    }
+
+    if (previousSources.empty())
+    {
+        if (! inputId.isNull())
+            graphEngine->connect(inputId, newNodeId);
+    }
+    else
+    {
+        for (const auto& source : previousSources)
+        {
+            if (source != newNodeId)
+                graphEngine->connect(source, newNodeId);
+        }
+    }
+
+    if (! outputId.isNull())
+        graphEngine->connect(newNodeId, outputId);
+
+    bool preparedOK = false;
+    try
+    {
+        graphEngine->prepare();
+        preparedOK = true;
+    }
+    catch (const std::exception& e)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               "Graph Prepare",
+                                               "The graph could not be prepared:\n" + juce::String(e.what()));
+    }
+
+    if (! preparedOK)
+    {
+        if (! outputId.isNull())
+            graphEngine->disconnect(newNodeId, outputId);
+
+        if (previousSources.empty())
+        {
+            if (! inputId.isNull())
+                graphEngine->disconnect(inputId, newNodeId);
+        }
+        else
+        {
+            for (const auto& source : previousSources)
+                graphEngine->disconnect(source, newNodeId);
+        }
+
+        if (! outputId.isNull())
+        {
+            for (const auto& source : previousSources)
+                graphEngine->connect(source, outputId);
+
+            if (previousSources.empty() && ! inputId.isNull())
+                graphEngine->connect(inputId, outputId);
+        }
+
+        try
+        {
+            graphEngine->prepare();
+        }
+        catch (const std::exception&)
+        {
+            // If preparation still fails, let the user fix connections manually.
+        }
+    }
+
+    graphView.refreshGraph(true);
 }
 
 void MainWindow::loadProject()

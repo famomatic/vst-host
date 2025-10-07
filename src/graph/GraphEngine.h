@@ -36,12 +36,14 @@ public:
 
     void setIO(NodeId inputNode, NodeId outputNode);
     void connect(NodeId from, NodeId to);
+    void disconnect(NodeId from, NodeId to);
 
     void setEngineFormat(double sampleRate, int blockSize);
     void prepare();
     [[nodiscard]] int process(juce::AudioBuffer<float>& buffer);
 
     [[nodiscard]] std::vector<NodeId> getSchedule() const;
+    [[nodiscard]] std::vector<NodeId> getNodeIds() const;
     [[nodiscard]] std::vector<std::pair<NodeId, NodeId>> getConnections() const;
     [[nodiscard]] NodeId getInputNode() const;
     [[nodiscard]] NodeId getOutputNode() const;
