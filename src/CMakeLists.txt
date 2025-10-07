@@ -13,7 +13,7 @@ set(SOURCES
     ${SRC_DIR}/graph/Nodes/AudioIn.h
     ${SRC_DIR}/graph/Nodes/AudioOut.h
     ${SRC_DIR}/graph/Nodes/VstFx.cpp
-    ${SRC_DIR}/graph/Nodes/Gain.h
+    ${SRC_DIR}/graph/Nodes/GainNode.cpp
     ${SRC_DIR}/graph/Nodes/Mix.h
     ${SRC_DIR}/graph/Nodes/Split.h
     ${SRC_DIR}/graph/Nodes/Merge.h

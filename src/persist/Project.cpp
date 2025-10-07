@@ -29,9 +29,26 @@ namespace
 
     [[nodiscard]] juce::String readString(const juce::var& value)
     {
-        if (value.isString() || value.isStringType())
+        if (value.isString())
             return value.toString();
         return {};
+    }
+
+    [[nodiscard]] int readInt(const juce::var& value, int defaultValue = 0)
+    {
+        if (value.isInt() || value.isInt64())
+            return static_cast<int>(value);
+
+        if (value.isDouble())
+            return static_cast<int>(static_cast<double>(value));
+
+        if (value.isBool())
+            return static_cast<bool>(value) ? 1 : 0;
+
+        if (value.isString())
+            return value.toString().getIntValue();
+
+        return defaultValue;
     }
 
     [[nodiscard]] juce::String nodeTypeFromInstance(const host::graph::Node& node)
@@ -121,9 +138,9 @@ namespace
                         definition.pluginId = readString(nodeObj->getProperty("pluginId"));
                         definition.pluginPath = readString(nodeObj->getProperty("pluginPath"));
                         definition.pluginFormat = readString(nodeObj->getProperty("pluginFormat"));
-                        definition.inputs = static_cast<int>(nodeObj->getProperty("inputs", 0));
-                        definition.outputs = static_cast<int>(nodeObj->getProperty("outputs", 0));
-                        definition.latency = static_cast<int>(nodeObj->getProperty("latency", 0));
+                        definition.inputs = readInt(nodeObj->getProperty("inputs"));
+                        definition.outputs = readInt(nodeObj->getProperty("outputs"));
+                        definition.latency = readInt(nodeObj->getProperty("latency"));
                         nodes.push_back(std::move(definition));
                     }
                 }

@@ -13,6 +13,7 @@ public:
 
     void prepare(double sampleRate, int blockSize) override;
     void process(ProcessContext& ctx) override;
+    std::string name() const override { return "Gain"; }
 
 private:
     std::atomic<float> gain_ { 1.0f };
