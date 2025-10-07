@@ -3,41 +3,33 @@
 #include "graph/GraphEngine.h"
 #include "host/PluginHost.h"
 
+#include <atomic>
+#include <memory>
+#include <string>
+
 namespace host::graph::nodes
 {
     class VstFxNode : public Node
     {
     public:
-        explicit VstFxNode(std::shared_ptr<host::plugin::PluginInstance> instance)
-            : plugin(std::move(instance))
-        {
-        }
+        VstFxNode(std::unique_ptr<host::plugin::PluginInstance> instance, std::string pluginName = {});
+        ~VstFxNode() override = default;
 
-        void prepare(double sampleRate, int blockSize) override
-        {
-            if (plugin)
-                plugin->prepare(sampleRate, blockSize);
-        }
+        void setBypassed(bool shouldBypass) noexcept { bypassed_.store(shouldBypass); }
+        [[nodiscard]] bool isBypassed() const noexcept { return bypassed_.load(); }
 
-        void process(ProcessContext& context) override
-        {
-            if (plugin)
-                plugin->process(context.audioBuffer);
-        }
+        void prepare(double sampleRate, int blockSize) override;
+        void process(ProcessContext& context) override;
+        int latencySamples() const noexcept override;
+        std::string name() const override;
 
-        int latencySamples() const noexcept override
-        {
-            return plugin ? plugin->getLatencySamples() : 0;
-        }
-
-        std::string name() const override
-        {
-            return plugin ? plugin->getName() : "VST FX";
-        }
-
-        std::shared_ptr<host::plugin::PluginInstance> getPlugin() const noexcept { return plugin; }
+        [[nodiscard]] host::plugin::PluginInstance* plugin() const noexcept { return instance_.get(); }
 
     private:
-        std::shared_ptr<host::plugin::PluginInstance> plugin;
+        std::unique_ptr<host::plugin::PluginInstance> instance_;
+        std::atomic<bool> bypassed_ { false };
+        std::string pluginName_;
+        int preparedBlockSize_ { 0 };
+        double preparedSampleRate_ { 0.0 };
     };
 }
