@@ -18,25 +18,19 @@ namespace host::graph::nodes
             instance_->prepare(sampleRate, blockSize);
     }
 
-    void VstFxNode::process(ProcessContext& context)
+    void VstFxNode::process(ProcessCtx& ctx)
     {
         if (! instance_ || bypassed_.load())
             return;
 
-        auto& buffer = context.audioBuffer;
-        const auto numChannels = buffer.getNumChannels();
-        const auto numSamples = buffer.getNumSamples();
-
-        if (preparedSampleRate_ != context.sampleRate || preparedBlockSize_ != context.blockSize)
+        if (preparedSampleRate_ != ctx.sampleRate || preparedBlockSize_ != ctx.blockSize)
         {
-            preparedSampleRate_ = context.sampleRate;
-            preparedBlockSize_ = context.blockSize;
+            preparedSampleRate_ = ctx.sampleRate;
+            preparedBlockSize_ = ctx.blockSize;
             instance_->prepare(preparedSampleRate_, preparedBlockSize_);
         }
 
-        auto* const* inputData = buffer.getArrayOfReadPointers();
-        auto* const* outputData = buffer.getArrayOfWritePointers();
-        instance_->process(inputData, numChannels, outputData, numChannels, numSamples);
+        instance_->process(ctx.in, ctx.inCh, ctx.out, ctx.outCh, ctx.numFrames);
     }
 
     int VstFxNode::latencySamples() const noexcept
@@ -50,4 +44,4 @@ namespace host::graph::nodes
             return pluginName_;
         return "VST FX";
     }
-}
+} // namespace host::graph::nodes

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "graph/GraphEngine.h"
+#include "graph/Node.h"
 #include "host/PluginHost.h"
 
 #include <atomic>
@@ -19,7 +19,7 @@ namespace host::graph::nodes
         [[nodiscard]] bool isBypassed() const noexcept { return bypassed_.load(); }
 
         void prepare(double sampleRate, int blockSize) override;
-        void process(ProcessContext& context) override;
+        void process(ProcessCtx& ctx) override;
         int latencySamples() const noexcept override;
         std::string name() const override;
 

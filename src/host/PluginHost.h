@@ -22,8 +22,7 @@ namespace host::plugin
         std::filesystem::path path;
         int ins = 2;
         int outs = 2;
-        int latency = 0;
-        std::string category;
+        int latency = 0; // samples
     };
 
     class PluginInstance
@@ -31,7 +30,7 @@ namespace host::plugin
     public:
         virtual ~PluginInstance() = default;
         virtual void prepare(double sr, int block) = 0;
-        virtual void process(const float* const* in, int inCh, float* const* out, int outCh, int numFrames) = 0;
+        virtual void process(float** in, int inCh, float** out, int outCh, int numFrames) = 0;
         [[nodiscard]] virtual int latencySamples() const = 0;
         virtual bool getState(std::vector<std::uint8_t>& out) = 0;
         virtual bool setState(const std::uint8_t* data, std::size_t len) = 0;
@@ -39,4 +38,4 @@ namespace host::plugin
 
     std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info);
     std::unique_ptr<PluginInstance> loadVst2(const PluginInfo& info);
-}
+} // namespace host::plugin

@@ -242,6 +242,8 @@ namespace
     class Vst3PluginInstance final : public PluginInstance
     {
     public:
+        static constexpr int kMaxChannels = 8;
+
         Vst3PluginInstance(SharedLibrary&& moduleIn,
                            Steinberg::Vst::IComponent* componentIn,
                            Steinberg::Vst::IAudioProcessor* processorIn,
@@ -253,8 +255,8 @@ namespace
             , component(componentIn)
             , processor(processorIn)
             , controller(controllerIn)
-            , maxInputs(inChannels)
-            , maxOutputs(outChannels)
+            , maxInputs(std::clamp(inChannels, 0, kMaxChannels))
+            , maxOutputs(std::clamp(outChannels, 0, kMaxChannels))
             , initialized(alreadyInitialized)
         {
         }
@@ -301,19 +303,22 @@ namespace
             latency = static_cast<int>(processor->getLatencySamples());
         }
 
-        void process(const float* const* in, int inCh, float* const* out, int outCh, int numFrames) override
+        void process(float** in, int inCh, float** out, int outCh, int numFrames) override
         {
             if (! processor || ! processing || ! in || ! out)
                 return;
 
-            const auto usedInputs = std::min(inCh, maxInputs);
-            const auto usedOutputs = std::min(outCh, maxOutputs);
+            std::array<float*, 8> inputPtrs {};
+            std::array<float*, 8> outputPtrs {};
+            const int usedInputs = std::min(maxInputs, static_cast<int>(inputPtrs.size()));
+            const int usedOutputs = std::min(maxOutputs, static_cast<int>(outputPtrs.size()));
 
-            std::vector<float*> inputPtrs(static_cast<std::size_t>(usedInputs));
+            if (inCh < usedInputs || outCh < usedOutputs)
+                return;
+
             for (int ch = 0; ch < usedInputs; ++ch)
-                inputPtrs[static_cast<std::size_t>(ch)] = const_cast<float*>(in[ch]);
+                inputPtrs[static_cast<std::size_t>(ch)] = in[ch];
 
-            std::vector<float*> outputPtrs(static_cast<std::size_t>(usedOutputs));
             for (int ch = 0; ch < usedOutputs; ++ch)
                 outputPtrs[static_cast<std::size_t>(ch)] = out[ch];
 
@@ -335,9 +340,10 @@ namespace
             data.symbolicSampleSize = Steinberg::Vst::kSample32;
             data.inputs = inputs;
             data.outputs = outputs;
+            // TODO: Attach event queues and parameter changes when automation is supported.
 
             processor->process(data);
-            latency = std::max(latency, static_cast<int>(processor->getLatencySamples()));
+            latency = static_cast<int>(processor->getLatencySamples());
         }
 
         [[nodiscard]] int latencySamples() const override { return latency; }
@@ -482,7 +488,7 @@ namespace
             latency = effect->delay;
         }
 
-        void process(const float* const* in, int inCh, float* const* out, int outCh, int numFrames) override
+        void process(float** in, int inCh, float** out, int outCh, int numFrames) override
         {
             if (! effect || ! active || ! in || ! out)
                 return;
@@ -493,7 +499,7 @@ namespace
             if (effect->num_inputs != inCh || effect->num_outputs != outCh)
                 return;
 
-            std::array<const float*, kVst2MaxChannels> inputs {};
+            std::array<float*, kVst2MaxChannels> inputs {};
             std::array<float*, kVst2MaxChannels> outputs {};
 
             for (int c = 0; c < outCh; ++c)
@@ -504,7 +510,8 @@ namespace
 
             if (replacing && effect->process_float)
             {
-                effect->process_float(effect, inputs.data(), const_cast<float**>(out), numFrames);
+                // TODO: Support double precision processing when available.
+                effect->process_float(effect, inputs.data(), out, numFrames);
             }
             else if (effect->process)
             {

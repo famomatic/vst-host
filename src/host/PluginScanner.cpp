@@ -92,9 +92,6 @@ namespace host::plugin
                         if (auto outs = obj->getProperty("outs"); ! outs.isVoid())
                             info.outs = static_cast<int>(outs);
                         info.latency = static_cast<int>(obj->getProperty("latency"));
-                        auto category = obj->getProperty("category").toString();
-                        if (category.isNotEmpty())
-                            info.category = category.toStdString();
                     }
                     loaded.push_back(info);
                 }
@@ -132,7 +129,6 @@ namespace host::plugin
             obj->setProperty("ins", info.ins);
             obj->setProperty("outs", info.outs);
             obj->setProperty("latency", info.latency);
-            obj->setProperty("category", info.category.empty() ? juce::String() : juce::String(info.category));
             obj->setProperty("blacklisted", false);
             juce::var pluginVar(obj.get());
             pluginArray.add(pluginVar);
@@ -169,7 +165,6 @@ namespace host::plugin
                 info.format = file.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
                 info.ins = 2;
                 info.outs = 2;
-                info.category = "Effect";
                 results.push_back(std::move(info));
             }
         }
