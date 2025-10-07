@@ -16,8 +16,12 @@ set(JUCE_SUBMODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/JUCE)
 set(VST3_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/VST3_SDK)
 set(VST2_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/vst2sdk)
 
-if (NOT EXISTS "${CMAKE_SOURCE_DIR}/externals/vst2sdk/include/aeffect.h")
-    message(FATAL_ERROR "Xaymar VST2 SDK missing at externals/vst2sdk")
+if (EXISTS "${CMAKE_SOURCE_DIR}/externals/vst2sdk/include/vst.h")
+    message(STATUS "Found Xaymar VST2 SDK at ${CMAKE_SOURCE_DIR}/externals/vst2sdk")
+    add_definitions(-DENABLE_VST2)
+    include_directories("${CMAKE_SOURCE_DIR}/externals/vst2sdk/include")
+else()
+    message(FATAL_ERROR "Xaymar VST2 SDK not found. Expected ${CMAKE_SOURCE_DIR}/externals/vst2sdk/include/vst.h")
 endif()
 
 include_directories(
