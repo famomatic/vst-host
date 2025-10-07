@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "scannedAt": "2024-01-01T00:00:00Z",
+  "plugins": [
+    {
+      "id": "demo-vst3",
+      "name": "Demo Reverb",
+      "format": "VST3",
+      "path": "C:/VST3/DemoReverb.vst3",
+      "category": "Reverb",
+      "ins": 2,
+      "outs": 2,
+      "latency": 32,
+      "blacklisted": false
+    }
+  ]
+}
