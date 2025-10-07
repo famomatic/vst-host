@@ -1,145 +1,148 @@
 #include "graph/GraphEngine.h"
 
 #include <algorithm>
-#include <map>
 #include <queue>
+#include <stdexcept>
 
 namespace host::graph
 {
-    GraphEngine::GraphEngine() = default;
-    GraphEngine::~GraphEngine() = default;
-
-    void GraphEngine::setEngineFormat(double sampleRate, int blockSize)
-    {
-        currentSampleRate = sampleRate;
-        currentBlockSize = blockSize;
-        needsScheduleRebuild = true;
-    }
-
-    NodeId GraphEngine::addNode(std::unique_ptr<Node> node)
-    {
-        NodeId id;
-        nodes.emplace(id, std::move(node));
-        needsScheduleRebuild = true;
-        return id;
-    }
-
-    void GraphEngine::removeNode(NodeId id)
-    {
-        nodes.erase(id);
-        connections.erase(std::remove_if(connections.begin(), connections.end(), [id](const Connection& c) {
-            return c.source == id || c.destination == id;
-        }), connections.end());
-        schedule.erase(std::remove(schedule.begin(), schedule.end(), id), schedule.end());
-        needsScheduleRebuild = true;
-    }
-
-    void GraphEngine::clear()
-    {
-        nodes.clear();
-        connections.clear();
-        schedule.clear();
-        audioInputId = {};
-        audioOutputId = {};
-        needsScheduleRebuild = true;
-    }
-
-    bool GraphEngine::connect(NodeId source, NodeId dest)
-    {
-        if (source == dest)
-            return false;
-
-        connections.push_back({ source, dest });
-        needsScheduleRebuild = true;
-        return true;
-    }
-
-    void GraphEngine::disconnect(NodeId source, NodeId dest)
-    {
-        connections.erase(std::remove_if(connections.begin(), connections.end(), [source, dest](const Connection& c) {
-            return c.source == source && c.destination == dest;
-        }), connections.end());
-        needsScheduleRebuild = true;
-    }
-
-    void GraphEngine::setIO(NodeId input, NodeId output)
-    {
-        audioInputId = input;
-        audioOutputId = output;
-    }
-
-    void GraphEngine::prepare()
-    {
-        if (needsScheduleRebuild)
-        {
-            rebuildSchedule();
-            updateLatencyAlignment();
-            needsScheduleRebuild = false;
-        }
-
-        for (auto& [id, node] : nodes)
-            if (node)
-                node->prepare(currentSampleRate, currentBlockSize);
-    }
-
-    void GraphEngine::process(juce::AudioBuffer<float>& buffer)
-    {
-        ProcessContext context { buffer, currentSampleRate, currentBlockSize };
-        for (auto& nodeId : schedule)
-        {
-            if (auto* node = getNode(nodeId))
-                node->process(context);
-        }
-    }
-
-    Node* GraphEngine::getNode(NodeId id) const
-    {
-        if (auto it = nodes.find(id); it != nodes.end())
-            return it->second.get();
-        return nullptr;
-    }
-
-    void GraphEngine::rebuildSchedule()
-    {
-        schedule.clear();
-
-        std::map<NodeId, int> indegree;
-        for (auto& [id, node] : nodes)
-            indegree[id] = 0;
-        for (auto& c : connections)
-            ++indegree[c.destination];
-
-        std::queue<NodeId> q;
-        for (auto& [id, deg] : indegree)
-            if (deg == 0)
-                q.push(id);
-
-        while (! q.empty())
-        {
-            auto id = q.front();
-            q.pop();
-            schedule.push_back(id);
-
-            for (auto& c : connections)
-            {
-                if (c.source == id)
-                {
-                    auto& deg = indegree[c.destination];
-                    if (--deg == 0)
-                        q.push(c.destination);
-                }
-            }
-        }
-    }
-
-    bool GraphEngine::detectCycle(NodeId, std::vector<NodeId>&, std::vector<NodeId>&) const
-    {
-        // TODO: implement proper cycle detection.
-        return false;
-    }
-
-    void GraphEngine::updateLatencyAlignment()
-    {
-        // TODO: implement PDC alignment once latency reporting is hooked up.
-    }
+namespace
+{
+constexpr int maxChannels = 2;
 }
+
+void GraphEngine::setGraph(std::vector<std::unique_ptr<Node>> nodes,
+                           std::vector<std::pair<int, int>> edges)
+{
+    nodes_ = std::move(nodes);
+    edges_ = std::move(edges);
+    schedule_.clear();
+    delays_.clear();
+    prepared_ = false;
+}
+
+void GraphEngine::prepare(double sampleRate, int blockSize)
+{
+    sampleRate_ = sampleRate;
+    blockSize_ = blockSize;
+
+    const auto nodeCount = static_cast<int>(nodes_.size());
+    std::vector<int> indegree(static_cast<size_t>(nodeCount), 0);
+    std::vector<std::vector<int>> adjacency(static_cast<size_t>(nodeCount));
+
+    delays_.assign(edges_.size(), EdgeDelay{});
+
+    for (size_t edgeIndex = 0; edgeIndex < edges_.size(); ++edgeIndex)
+    {
+        const auto [from, to] = edges_[edgeIndex];
+        if (from < 0 || to < 0 || from >= nodeCount || to >= nodeCount)
+            throw std::runtime_error("GraphEngine::prepare: edge index out of range");
+
+        adjacency[static_cast<size_t>(from)].push_back(to);
+        ++indegree[static_cast<size_t>(to)];
+    }
+
+    std::queue<int> ready;
+    for (int i = 0; i < nodeCount; ++i)
+        if (indegree[static_cast<size_t>(i)] == 0)
+            ready.push(i);
+
+    schedule_.clear();
+    schedule_.reserve(nodes_.size());
+
+    int visited = 0;
+    while (! ready.empty())
+    {
+        const int nodeIndex = ready.front();
+        ready.pop();
+        ++visited;
+
+        schedule_.push_back(nodes_[static_cast<size_t>(nodeIndex)].get());
+
+        for (const auto next : adjacency[static_cast<size_t>(nodeIndex)])
+        {
+            auto& deg = indegree[static_cast<size_t>(next)];
+            if (--deg == 0)
+                ready.push(next);
+        }
+    }
+
+    if (visited != nodeCount)
+        throw std::runtime_error("GraphEngine::prepare: graph contains a cycle");
+
+    for (auto* node : schedule_)
+        if (node != nullptr)
+            node->prepare(sampleRate_, blockSize_);
+
+    for (auto& channel : scratch_)
+        channel.assign(static_cast<size_t>(blockSize_), 0.0f);
+
+    prepared_ = true;
+}
+
+void GraphEngine::process(float** in, int inCh, int inFrames,
+                          float** out, int outCh, int& outFrames,
+                          double sampleRate, int blockSize)
+{
+    (void) sampleRate;
+    (void) blockSize;
+
+    if (! prepared_ || schedule_.empty())
+    {
+        outFrames = 0;
+        return;
+    }
+
+    const int frames = std::min(inFrames, blockSize_);
+    const int processChannels = maxChannels;
+
+    for (int ch = 0; ch < processChannels; ++ch)
+    {
+        float* dst = scratch_[static_cast<size_t>(ch)].data();
+        if (ch < inCh && in != nullptr && in[ch] != nullptr)
+            std::copy_n(in[ch], static_cast<size_t>(frames), dst);
+        else
+            std::fill_n(dst, static_cast<size_t>(frames), 0.0f);
+    }
+
+    float* channelPtrs[maxChannels];
+    for (int ch = 0; ch < processChannels; ++ch)
+        channelPtrs[ch] = scratch_[static_cast<size_t>(ch)].data();
+
+    ProcessCtx ctx{};
+    ctx.in = channelPtrs;
+    ctx.inCh = std::min(inCh, processChannels);
+    ctx.out = channelPtrs;
+    ctx.outCh = std::min(outCh, processChannels);
+    ctx.numFrames = frames;
+    ctx.sampleRate = sampleRate_;
+    ctx.blockSize = blockSize_;
+
+    for (auto* node : schedule_)
+    {
+        if (node == nullptr)
+            continue;
+
+        // TODO(PDC): apply per-edge latency offsets here when fan-out is supported.
+        node->process(ctx);
+    }
+
+    if (out != nullptr)
+    {
+        const int copyChannels = std::min(outCh, processChannels);
+        for (int ch = 0; ch < copyChannels; ++ch)
+        {
+            if (out[ch] != nullptr)
+                std::copy_n(channelPtrs[ch], static_cast<size_t>(frames), out[ch]);
+        }
+
+        for (int ch = copyChannels; ch < outCh; ++ch)
+        {
+            if (out[ch] != nullptr)
+                std::fill_n(out[ch], static_cast<size_t>(frames), 0.0f);
+        }
+    }
+
+    outFrames = frames;
+}
+} // namespace host::graph
