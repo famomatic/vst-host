@@ -1,22 +1,55 @@
 #include "audio/DeviceEngine.h"
 
+#include <juce_audio_basics/juce_audio_basics.h>
+
 #include <algorithm>
-#include <cstring>
-#include <vector>
+#include <utility>
 
 namespace host::audio
 {
-    DeviceEngine::DeviceEngine(std::shared_ptr<host::graph::GraphEngine> graphEngine)
-        : graph(std::move(graphEngine))
+    namespace
     {
-        engineBuffer.setSize(2, config.blockSize);
+        constexpr int resamplerMargin = 12;
+
+        [[nodiscard]] double safeRatio(double numerator, double denominator) noexcept
+        {
+            if (denominator <= 0.0 || numerator <= 0.0)
+                return 1.0;
+            return numerator / denominator;
+        }
     }
 
-    void DeviceEngine::setConfig(const EngineConfig& cfg)
+    DeviceEngine::DeviceEngine()
     {
-        config = cfg;
-        if (graph)
-            graph->setEngineFormat(config.sampleRate, config.blockSize);
+        deviceInfo.sampleRate = engineConfig.sampleRate;
+        deviceInfo.blockSize = engineConfig.blockSize;
+        deviceInfo.inputChannels = 2;
+        deviceInfo.outputChannels = 2;
+        prepareResamplers();
+    }
+
+    void DeviceEngine::setGraph(std::shared_ptr<host::graph::GraphEngine> newGraph)
+    {
+        graphEngine.store(std::move(newGraph));
+
+        if (auto graph = graphEngine.load())
+            graph->setEngineFormat(engineConfig.sampleRate, engineConfig.blockSize);
+    }
+
+    void DeviceEngine::setEngineConfig(const EngineConfig& cfg)
+    {
+        engineConfig = cfg;
+
+        if (auto graph = graphEngine.load())
+            graph->setEngineFormat(engineConfig.sampleRate, engineConfig.blockSize);
+
+        prepareResamplers();
+    }
+
+    void DeviceEngine::setDeviceInfo(const DeviceInfo& info)
+    {
+        deviceInfo = info;
+        prepareResamplers();
     }
 
     void DeviceEngine::audioDeviceIOCallback(const float* const* inputChannelData,
@@ -25,80 +58,117 @@ namespace host::audio
                                              int numOutputChannels,
                                              int numSamples)
     {
-        ensureBuffers(std::max(1, std::max(numInputChannels, numOutputChannels)), config.blockSize);
+        clearOutputs(outputChannelData, numOutputChannels, numSamples);
 
-        const auto deviceToEngineRatio = deviceFormat.sampleRate > 0.0
-            ? config.sampleRate / deviceFormat.sampleRate
-            : 1.0;
-        const auto engineToDeviceRatio = deviceFormat.sampleRate > 0.0
-            ? deviceFormat.sampleRate / config.sampleRate
-            : 1.0;
+        if (numSamples <= 0 || engineBuffer.getNumChannels() == 0)
+            return;
 
-        const auto numChannels = engineBuffer.getNumChannels();
-        resamplerIn.prepare(numChannels, deviceToEngineRatio);
-        resamplerOut.prepare(numChannels, engineToDeviceRatio);
+        const int channels = engineBuffer.getNumChannels();
 
-        std::vector<const float*> deviceInputs(static_cast<size_t>(numChannels), nullptr);
-        std::vector<float*> engineInputs(static_cast<size_t>(numChannels), nullptr);
-        std::vector<const float*> engineOutputs(static_cast<size_t>(numChannels), nullptr);
-        std::vector<float*> deviceOutputs(static_cast<size_t>(numChannels), nullptr);
-
-        for (int ch = 0; ch < numChannels; ++ch)
+        for (int ch = 0; ch < channels; ++ch)
         {
-            if (ch < numInputChannels && inputChannelData != nullptr)
-                deviceInputs[static_cast<size_t>(ch)] = inputChannelData[ch];
+            const float* source = (inputChannelData != nullptr && ch < numInputChannels && inputChannelData[ch] != nullptr)
+                ? inputChannelData[ch]
+                : nullptr;
+            inputPointerScratch[static_cast<size_t>(ch)] = source;
 
-            std::fill(engineIn[static_cast<size_t>(ch)].begin(), engineIn[static_cast<size_t>(ch)].end(), 0.0f);
-            std::fill(engineOut[static_cast<size_t>(ch)].begin(), engineOut[static_cast<size_t>(ch)].end(), 0.0f);
-            engineInputs[static_cast<size_t>(ch)] = engineIn[static_cast<size_t>(ch)].data();
-            engineOutputs[static_cast<size_t>(ch)] = engineOut[static_cast<size_t>(ch)].data();
+            float* dest = (outputChannelData != nullptr && ch < numOutputChannels)
+                ? outputChannelData[ch]
+                : nullptr;
+            outputPointerScratch[static_cast<size_t>(ch)] = dest;
 
-            if (ch < numOutputChannels && outputChannelData != nullptr)
-                deviceOutputs[static_cast<size_t>(ch)] = outputChannelData[ch];
+            engineWritePointers[static_cast<size_t>(ch)] = engineBuffer.getWritePointer(ch);
+            engineReadPointers[static_cast<size_t>(ch)] = engineBuffer.getReadPointer(ch);
         }
 
-        resamplerIn.process(deviceInputs.data(), numSamples, engineInputs.data(), config.blockSize);
-        engineBuffer.clear();
-        for (int ch = 0; ch < numChannels; ++ch)
-            engineBuffer.copyFrom(ch, 0, engineIn[static_cast<size_t>(ch)].data(), config.blockSize);
+        inputResampler.push(inputPointerScratch.data(), numSamples);
 
-        if (graph)
+        auto graph = graphEngine.load();
+        const int engineBlockSize = std::max(1, engineConfig.blockSize);
+
+        while (inputResampler.canProcess(engineBlockSize))
         {
-            graph->prepare();
-            graph->process(engineBuffer);
+            inputResampler.process(engineWritePointers.data(), engineBlockSize);
+
+            if (graph)
+                graph->process(engineBuffer);
+            else
+                engineBuffer.clear();
+
+            outputResampler.push(engineReadPointers.data(), engineBlockSize);
         }
 
-        for (int ch = 0; ch < numChannels; ++ch)
-            std::memcpy(engineOut[static_cast<size_t>(ch)].data(), engineBuffer.getReadPointer(ch), sizeof(float) * static_cast<size_t>(config.blockSize));
-
-        resamplerOut.process(engineOutputs.data(), config.blockSize, deviceOutputs.data(), numSamples);
+        const int produced = outputResampler.process(outputPointerScratch.data(), numSamples);
+        if (produced < numSamples)
+        {
+            for (int ch = 0; ch < numOutputChannels; ++ch)
+            {
+                if (outputChannelData != nullptr && outputChannelData[ch] != nullptr)
+                    juce::FloatVectorOperations::clear(outputChannelData[ch] + produced, numSamples - produced);
+            }
+        }
     }
 
     void DeviceEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     {
-        if (! device)
+        if (device == nullptr)
             return;
 
-        deviceFormat.sampleRate = device->getCurrentSampleRate();
-        deviceFormat.blockSize = device->getCurrentBufferSizeSamples();
+        DeviceInfo info;
+        info.sampleRate = device->getCurrentSampleRate();
+        info.blockSize = device->getCurrentBufferSizeSamples();
+        info.inputChannels = device->getActiveInputChannels().countNumberOfSetBits();
+        info.outputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
+        setDeviceInfo(info);
 
-        ensureBuffers(device->getActiveOutputChannels().countNumberOfSetBits(), config.blockSize);
+        inputResampler.reset();
+        outputResampler.reset();
     }
 
     void DeviceEngine::audioDeviceStopped()
     {
+        inputResampler.reset();
+        outputResampler.reset();
         engineBuffer.clear();
     }
 
-    void DeviceEngine::ensureBuffers(int numChannels, int numSamples)
+    void DeviceEngine::prepareResamplers()
     {
-        engineBuffer.setSize(numChannels, numSamples, false, false, true);
-        engineIn.resize(static_cast<size_t>(numChannels));
-        engineOut.resize(static_cast<size_t>(numChannels));
-        for (int ch = 0; ch < numChannels; ++ch)
+        const int numChannels = std::max(2, std::max(deviceInfo.inputChannels, deviceInfo.outputChannels));
+        const int engineBlockSize = std::max(1, engineConfig.blockSize);
+        const int deviceBlockSize = std::max(1, deviceInfo.blockSize);
+
+        engineBuffer.setSize(numChannels, engineBlockSize, false, false, true);
+        prepareScratchBuffers(numChannels);
+
+        const int inputChunk = std::max(deviceBlockSize, engineBlockSize) * 2;
+        const double deviceToEngine = safeRatio(deviceInfo.sampleRate, engineConfig.sampleRate);
+        inputResampler.prepare(numChannels, deviceToEngine, inputChunk, engineBlockSize, resamplerMargin);
+        inputResampler.reset();
+
+        const int outputChunk = std::max(deviceBlockSize, engineBlockSize) * 2;
+        const double engineToDevice = safeRatio(engineConfig.sampleRate, deviceInfo.sampleRate);
+        outputResampler.prepare(numChannels, engineToDevice, engineBlockSize, outputChunk, resamplerMargin);
+        outputResampler.reset();
+    }
+
+    void DeviceEngine::prepareScratchBuffers(int numChannels)
+    {
+        inputPointerScratch.resize(static_cast<size_t>(numChannels));
+        outputPointerScratch.resize(static_cast<size_t>(numChannels));
+        engineWritePointers.resize(static_cast<size_t>(numChannels));
+        engineReadPointers.resize(static_cast<size_t>(numChannels));
+    }
+
+    void DeviceEngine::clearOutputs(float* const* outputChannelData, int numOutputChannels, int numSamples)
+    {
+        if (outputChannelData == nullptr || numSamples <= 0)
+            return;
+
+        for (int ch = 0; ch < numOutputChannels; ++ch)
         {
-            engineIn[static_cast<size_t>(ch)].resize(static_cast<size_t>(numSamples));
-            engineOut[static_cast<size_t>(ch)].resize(static_cast<size_t>(numSamples));
+            if (auto* dest = outputChannelData[ch])
+                juce::FloatVectorOperations::clear(dest, numSamples);
         }
     }
 }

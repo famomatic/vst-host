@@ -44,9 +44,9 @@ namespace host::gui
         engineSampleRateBox.setSelectedId(2);
         engineSampleRateBox.onChange = [this]
         {
-            auto cfg = deviceEngine.getConfig();
+            auto cfg = deviceEngine.getEngineConfig();
             cfg.sampleRate = engineSampleRateBox.getText().getDoubleValue();
-            deviceEngine.setConfig(cfg);
+            deviceEngine.setEngineConfig(cfg);
         };
 
         engineBlockBox.addItem("128", 1);
@@ -55,9 +55,9 @@ namespace host::gui
         engineBlockBox.setSelectedId(2);
         engineBlockBox.onChange = [this]
         {
-            auto cfg = deviceEngine.getConfig();
+            auto cfg = deviceEngine.getEngineConfig();
             cfg.blockSize = engineBlockBox.getText().getIntValue();
-            deviceEngine.setConfig(cfg);
+            deviceEngine.setEngineConfig(cfg);
         };
 
         refreshDeviceList();

@@ -20,14 +20,16 @@ MainWindow::MainWindow()
     : juce::DocumentWindow("VST Host Scaffold", juce::Colours::darkgrey, juce::DocumentWindow::allButtons),
       graphEngine(std::make_shared<host::graph::GraphEngine>()),
       pluginScanner(std::make_shared<host::plugin::PluginScanner>()),
-      deviceEngine(graphEngine)
+      deviceEngine()
 {
     setUsingNativeTitleBar(true);
     setResizable(true, true);
 
+    deviceEngine.setGraph(graphEngine);
+    deviceEngine.setEngineConfig({ 48000.0, 256 });
+
     deviceManager.initialise(0, 2, nullptr, true);
     deviceManager.addAudioCallback(&deviceEngine);
-    deviceEngine.setConfig({ 48000.0, 256 });
 
     pluginBrowser.setScanner(pluginScanner);
     graphView.setGraph(graphEngine);
