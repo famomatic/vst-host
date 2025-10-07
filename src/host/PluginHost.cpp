@@ -12,14 +12,30 @@
  #include <dlfcn.h>
 #endif
 
+#if !defined(_WIN32) && !defined(__cdecl)
+ #define __cdecl
+#endif
+
 #include <pluginterfaces/base/ibstream.h>
 #include <pluginterfaces/base/ipluginbase.h>
-#include <pluginterfaces/base/ipluginfactory.h>
 #include <pluginterfaces/base/funknown.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/vsttypes.h>
+
+#if defined(VST_VERSION)
+ #undef VST_VERSION
+#endif
+#if defined(kVstVersionMajor)
+ #undef kVstVersionMajor
+#endif
+#if defined(kVstVersionMinor)
+ #undef kVstVersionMinor
+#endif
+#if defined(kVstVersionSub)
+ #undef kVstVersionSub
+#endif
 
 #include <vst.h>
 
@@ -125,7 +141,7 @@ namespace
             return newCount;
         }
 
-        tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+        Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
         {
             if (std::memcmp(iid, Steinberg::IBStream::iid, sizeof(Steinberg::TUID)) == 0)
             {
@@ -282,10 +298,10 @@ namespace
             processor->setProcessing(true);
             processing = true;
 
-            latency = std::max(component->getLatencySamples(), processor->getLatencySamples());
+            latency = static_cast<int>(processor->getLatencySamples());
         }
 
-        void process(float** in, int inCh, float** out, int outCh, int numFrames) override
+        void process(const float* const* in, int inCh, float* const* out, int outCh, int numFrames) override
         {
             if (! processor || ! processing || ! in || ! out)
                 return;
@@ -293,16 +309,24 @@ namespace
             const auto usedInputs = std::min(inCh, maxInputs);
             const auto usedOutputs = std::min(outCh, maxOutputs);
 
+            std::vector<float*> inputPtrs(static_cast<std::size_t>(usedInputs));
+            for (int ch = 0; ch < usedInputs; ++ch)
+                inputPtrs[static_cast<std::size_t>(ch)] = const_cast<float*>(in[ch]);
+
+            std::vector<float*> outputPtrs(static_cast<std::size_t>(usedOutputs));
+            for (int ch = 0; ch < usedOutputs; ++ch)
+                outputPtrs[static_cast<std::size_t>(ch)] = out[ch];
+
             Steinberg::Vst::AudioBusBuffers inputs[1] {};
             Steinberg::Vst::AudioBusBuffers outputs[1] {};
 
             inputs[0].numChannels = usedInputs;
             inputs[0].silenceFlags = 0;
-            inputs[0].channelBuffers32 = in;
+            inputs[0].channelBuffers32 = inputPtrs.data();
 
             outputs[0].numChannels = usedOutputs;
             outputs[0].silenceFlags = 0;
-            outputs[0].channelBuffers32 = out;
+            outputs[0].channelBuffers32 = outputPtrs.data();
 
             Steinberg::Vst::ProcessData data {};
             data.numInputs = 1;
@@ -313,7 +337,7 @@ namespace
             data.outputs = outputs;
 
             processor->process(data);
-            latency = std::max(latency, processor->getLatencySamples());
+            latency = std::max(latency, static_cast<int>(processor->getLatencySamples()));
         }
 
         [[nodiscard]] int latencySamples() const override { return latency; }
@@ -458,7 +482,7 @@ namespace
             latency = effect->delay;
         }
 
-        void process(float** in, int inCh, float** out, int outCh, int numFrames) override
+        void process(const float* const* in, int inCh, float* const* out, int outCh, int numFrames) override
         {
             if (! effect || ! active || ! in || ! out)
                 return;
@@ -480,7 +504,7 @@ namespace
 
             if (replacing && effect->process_float)
             {
-                effect->process_float(effect, inputs.data(), out, numFrames);
+                effect->process_float(effect, inputs.data(), const_cast<float**>(out), numFrames);
             }
             else if (effect->process)
             {
@@ -549,11 +573,12 @@ namespace
     };
 
     constexpr int32_t kVstMagic = VST_FOURCC('V', 's', 't', 'P');
+    constexpr int32_t kVstVersion2400 = 2400;
 
-    intptr_t VST_FUNCTION_INTERFACE hostCallback(vst_effect_t*, int32_t opcode, int32_t, intptr_t, void*, float)
+    intptr_t VST_FUNCTION_INTERFACE hostCallback(vst_effect_t*, int32_t opcode, int32_t, std::int64_t, const char*, float)
     {
         if (opcode == VST_HOST_OPCODE_VST_VERSION)
-            return VST_VERSION_2_4_0_0;
+            return kVstVersion2400;
         return 0;
     }
 }
@@ -576,7 +601,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     Steinberg::FUID requestedClassId;
     const bool hasRequestedId = ! info.id.empty() && requestedClassId.fromString(info.id.c_str());
 
-    Steinberg::PClassInfo2 classInfo {};
+    Steinberg::PClassInfo classInfo {};
     Steinberg::Vst::IComponent* component = nullptr;
     Steinberg::Vst::IAudioProcessor* processor = nullptr;
     Steinberg::Vst::IEditController* controller = nullptr;
@@ -584,10 +609,10 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     const auto count = factory->countClasses();
     for (Steinberg::int32 i = 0; i < count; ++i)
     {
-        if (factory->getClassInfo2(i, &classInfo) != Steinberg::kResultOk)
+        if (factory->getClassInfo(i, &classInfo) != Steinberg::kResultOk)
             continue;
 
-        if (std::strcmp(classInfo.category, Steinberg::Vst::kVstAudioEffectClass) != 0)
+        if (std::strcmp(classInfo.category, kVstAudioEffectClass) != 0)
             continue;
 
         Steinberg::FUID currentId(classInfo.cid);

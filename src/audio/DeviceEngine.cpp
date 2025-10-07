@@ -52,12 +52,14 @@ namespace host::audio
         prepareResamplers();
     }
 
-    void DeviceEngine::audioDeviceIOCallback(const float* const* inputChannelData,
-                                             int numInputChannels,
-                                             float* const* outputChannelData,
-                                             int numOutputChannels,
-                                             int numSamples)
+    void DeviceEngine::audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
+                                                        int numInputChannels,
+                                                        float* const* outputChannelData,
+                                                        int numOutputChannels,
+                                                        int numSamples,
+                                                        const juce::AudioIODeviceCallbackContext& context)
     {
+        juce::ignoreUnused(context);
         clearOutputs(outputChannelData, numOutputChannels, numSamples);
 
         if (numSamples <= 0 || engineBuffer.getNumChannels() == 0)

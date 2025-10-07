@@ -39,11 +39,12 @@ namespace host::audio
         void setDeviceInfo(const DeviceInfo& info);
         [[nodiscard]] DeviceInfo getDeviceInfo() const noexcept { return deviceInfo; }
 
-        void audioDeviceIOCallback(const float* const* inputChannelData,
-                                   int numInputChannels,
-                                   float* const* outputChannelData,
-                                   int numOutputChannels,
-                                   int numSamples) override;
+        void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
+                                              int numInputChannels,
+                                              float* const* outputChannelData,
+                                              int numOutputChannels,
+                                              int numSamples,
+                                              const juce::AudioIODeviceCallbackContext& context) override;
 
         void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
         void audioDeviceStopped() override;

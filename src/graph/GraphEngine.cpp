@@ -16,7 +16,7 @@ namespace host::graph
         needsScheduleRebuild = true;
     }
 
-    GraphEngine::NodeId GraphEngine::addNode(std::unique_ptr<Node> node)
+    NodeId GraphEngine::addNode(std::unique_ptr<Node> node)
     {
         NodeId id;
         nodes.emplace(id, std::move(node));

@@ -34,8 +34,9 @@ namespace host::graph::nodes
             instance_->prepare(preparedSampleRate_, preparedBlockSize_);
         }
 
-        float** channelData = buffer.getArrayOfWritePointers();
-        instance_->process(channelData, numChannels, channelData, numChannels, numSamples);
+        auto* const* inputData = buffer.getArrayOfReadPointers();
+        auto* const* outputData = buffer.getArrayOfWritePointers();
+        instance_->process(inputData, numChannels, outputData, numChannels, numSamples);
     }
 
     int VstFxNode::latencySamples() const noexcept

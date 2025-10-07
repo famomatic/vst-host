@@ -1,5 +1,7 @@
 #include "gui/MainWindow.h"
 
+#include <juce_audio_utils/juce_audio_utils.h>
+
 #include "graph/Nodes/AudioIn.h"
 #include "graph/Nodes/AudioOut.h"
 #include "persist/Project.h"
@@ -139,7 +141,7 @@ void MainWindow::initialiseGraph()
 void MainWindow::openPreferences()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.reset(new PreferencesComponent(deviceEngine, pluginScanner));
+    options.content.setOwned(new host::gui::PreferencesComponent(deviceEngine, pluginScanner));
     options.dialogTitle = "Preferences";
     options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
@@ -184,4 +186,3 @@ void MainWindow::saveProject()
     host::persist::Project project;
     project.save(chooser.getResult(), *graphEngine);
 }
-*** End Patch

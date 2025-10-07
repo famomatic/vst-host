@@ -83,15 +83,18 @@ namespace host::plugin
                     PluginInfo info;
                     if (auto* obj = pluginVar.getDynamicObject())
                     {
-                        info.identifier = obj->getProperty("id").toString().toStdString();
+                        info.id = obj->getProperty("id").toString().toStdString();
                         info.name = obj->getProperty("name").toString().toStdString();
                         info.format = obj->getProperty("format").toString() == "VST2" ? PluginFormat::VST2 : PluginFormat::VST3;
                         info.path = obj->getProperty("path").toString().toStdString();
-                        info.numInputs = static_cast<int>(obj->getProperty("ins"));
-                        info.numOutputs = static_cast<int>(obj->getProperty("outs"));
+                        if (auto ins = obj->getProperty("ins"); ! ins.isVoid())
+                            info.ins = static_cast<int>(ins);
+                        if (auto outs = obj->getProperty("outs"); ! outs.isVoid())
+                            info.outs = static_cast<int>(outs);
                         info.latency = static_cast<int>(obj->getProperty("latency"));
-                        if (auto category = obj->getProperty("category").toString(); category.isNotEmpty())
-                            info.categories = { category.toStdString() };
+                        auto category = obj->getProperty("category").toString();
+                        if (category.isNotEmpty())
+                            info.category = category.toStdString();
                     }
                     loaded.push_back(info);
                 }
@@ -122,14 +125,14 @@ namespace host::plugin
         for (const auto& info : snapshot)
         {
             juce::DynamicObject::Ptr obj(new juce::DynamicObject());
-            obj->setProperty("id", info.identifier);
-            obj->setProperty("name", info.name);
-            obj->setProperty("format", info.format == PluginFormat::VST3 ? "VST3" : "VST2");
-            obj->setProperty("path", info.path);
-            obj->setProperty("ins", info.numInputs);
-            obj->setProperty("outs", info.numOutputs);
+            obj->setProperty("id", juce::String(info.id));
+            obj->setProperty("name", juce::String(info.name));
+            obj->setProperty("format", info.format == PluginFormat::VST3 ? juce::String("VST3") : juce::String("VST2"));
+            obj->setProperty("path", juce::String(info.path.generic_string()));
+            obj->setProperty("ins", info.ins);
+            obj->setProperty("outs", info.outs);
             obj->setProperty("latency", info.latency);
-            obj->setProperty("category", info.categories.empty() ? juce::String() : juce::String(info.categories.front()));
+            obj->setProperty("category", info.category.empty() ? juce::String() : juce::String(info.category));
             obj->setProperty("blacklisted", false);
             juce::var pluginVar(obj.get());
             pluginArray.add(pluginVar);
@@ -162,11 +165,11 @@ namespace host::plugin
                 PluginInfo info;
                 info.path = file.getFullPathName().toStdString();
                 info.name = file.getFileNameWithoutExtension().toStdString();
-                info.identifier = juce::Uuid().toString().toStdString();
+                info.id = juce::Uuid().toString().toStdString();
                 info.format = file.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
-                info.numInputs = 2;
-                info.numOutputs = 2;
-                info.categories = { "Effect" };
+                info.ins = 2;
+                info.outs = 2;
+                info.category = "Effect";
                 results.push_back(std::move(info));
             }
         }

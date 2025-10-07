@@ -8,6 +8,7 @@ set(SOURCES
     ${SRC_DIR}/audio/Resampler.cpp
     ${SRC_DIR}/host/PluginHost.cpp
     ${SRC_DIR}/host/PluginScanner.cpp
+    ${SRC_DIR}/host/Vst3Iids.cpp
     ${SRC_DIR}/graph/GraphEngine.cpp
     ${SRC_DIR}/graph/Nodes/AudioIn.h
     ${SRC_DIR}/graph/Nodes/AudioOut.h
@@ -23,6 +24,14 @@ set(SOURCES
     ${SRC_DIR}/persist/Config.cpp
     ${SRC_DIR}/persist/Project.cpp
     ${SRC_DIR}/persist/Preset.cpp
+    ${VST3_SDK_DIR}/pluginterfaces/base/funknown.cpp
+    ${VST3_SDK_DIR}/pluginterfaces/base/coreiids.cpp
+    ${VST3_SDK_DIR}/base/source/fobject.cpp
+    ${VST3_SDK_DIR}/base/source/fstring.cpp
+    ${VST3_SDK_DIR}/base/source/fstreamer.cpp
+    ${VST3_SDK_DIR}/base/source/fbuffer.cpp
+    ${VST3_SDK_DIR}/base/thread/source/flock.cpp
+    ${VST3_SDK_DIR}/base/thread/source/fcondition.cpp
 )
 
 # 1) JUCE 방식으로 앱 타깃 생성 (필수)
@@ -62,6 +71,7 @@ target_link_libraries(VSTHostApp
 target_compile_definitions(VSTHostApp PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
 )
 
 if (MSVC)

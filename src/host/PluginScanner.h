@@ -3,6 +3,7 @@
 #include "host/PluginHost.h"
 
 #include <juce_core/juce_core.h>
+#include <juce_events/juce_events.h>
 #include <atomic>
 
 namespace host::plugin
