@@ -33,7 +33,10 @@ namespace host::audio
         graphEngine.store(std::move(newGraph));
 
         if (auto graph = graphEngine.load())
+        {
             graph->setEngineFormat(engineConfig.sampleRate, engineConfig.blockSize);
+            graph->prepare();
+        }
     }
 
     void DeviceEngine::setEngineConfig(const EngineConfig& cfg)
@@ -41,7 +44,10 @@ namespace host::audio
         engineConfig = cfg;
 
         if (auto graph = graphEngine.load())
+        {
             graph->setEngineFormat(engineConfig.sampleRate, engineConfig.blockSize);
+            graph->prepare();
+        }
 
         prepareResamplers();
     }
@@ -92,12 +98,23 @@ namespace host::audio
         {
             inputResampler.process(engineWritePointers.data(), engineBlockSize);
 
-            if (graph)
-                graph->process(engineBuffer);
-            else
-                engineBuffer.clear();
+            int produced = engineBlockSize;
 
-            outputResampler.push(engineReadPointers.data(), engineBlockSize);
+            if (graph)
+            {
+                produced = graph->process(engineBuffer);
+                if (produced <= 0)
+                {
+                    engineBuffer.clear();
+                    break;
+                }
+            }
+            else
+            {
+                engineBuffer.clear();
+            }
+
+            outputResampler.push(engineReadPointers.data(), produced);
         }
 
         const int produced = outputResampler.process(outputPointerScratch.data(), numSamples);

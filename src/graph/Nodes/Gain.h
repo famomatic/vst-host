@@ -1,6 +1,6 @@
 #pragma once
 
-#include "graph/GraphEngine.h"
+#include "graph/Node.h"
 
 #include <atomic>
 

@@ -19,7 +19,7 @@ namespace host::graph::nodes
         [[nodiscard]] bool isBypassed() const noexcept { return bypassed_.load(); }
 
         void prepare(double sampleRate, int blockSize) override;
-        void process(ProcessCtx& ctx) override;
+        void process(ProcessContext& ctx) override;
         int latencySamples() const noexcept override;
         std::string name() const override;
 

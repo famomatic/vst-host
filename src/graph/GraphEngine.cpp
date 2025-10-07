@@ -8,141 +8,255 @@ namespace host::graph
 {
 namespace
 {
-constexpr int maxChannels = 2;
+constexpr double defaultSampleRate = 48000.0;
+constexpr int defaultBlockSize = 256;
 }
 
-void GraphEngine::setGraph(std::vector<std::unique_ptr<Node>> nodes,
-                           std::vector<std::pair<int, int>> edges)
+std::string GraphEngine::toKey(const NodeId& id)
 {
-    nodes_ = std::move(nodes);
-    edges_ = std::move(edges);
+    return id.toString().toStdString();
+}
+
+void GraphEngine::clear()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    nodes_.clear();
+    indexById_.clear();
     schedule_.clear();
-    delays_.clear();
+    channelPointers_.clear();
+    inputNode_ = {};
+    outputNode_ = {};
+    sampleRate_ = defaultSampleRate;
+    blockSize_ = defaultBlockSize;
     prepared_ = false;
 }
 
-void GraphEngine::prepare(double sampleRate, int blockSize)
+GraphEngine::NodeId GraphEngine::addNode(std::unique_ptr<Node> node)
 {
-    sampleRate_ = sampleRate;
-    blockSize_ = blockSize;
+    if (node == nullptr)
+        throw std::invalid_argument("GraphEngine::addNode: node must not be null");
 
-    const auto nodeCount = static_cast<int>(nodes_.size());
-    std::vector<int> indegree(static_cast<size_t>(nodeCount), 0);
-    std::vector<std::vector<int>> adjacency(static_cast<size_t>(nodeCount));
+    std::lock_guard<std::mutex> lock(mutex_);
 
-    delays_.assign(edges_.size(), EdgeDelay{});
-
-    for (size_t edgeIndex = 0; edgeIndex < edges_.size(); ++edgeIndex)
+    NodeId id;
+    std::string key = toKey(id);
+    while (indexById_.find(key) != indexById_.end())
     {
-        const auto [from, to] = edges_[edgeIndex];
-        if (from < 0 || to < 0 || from >= nodeCount || to >= nodeCount)
-            throw std::runtime_error("GraphEngine::prepare: edge index out of range");
-
-        adjacency[static_cast<size_t>(from)].push_back(to);
-        ++indegree[static_cast<size_t>(to)];
+        id = NodeId();
+        key = toKey(id);
     }
 
-    std::queue<int> ready;
-    for (int i = 0; i < nodeCount; ++i)
-        if (indegree[static_cast<size_t>(i)] == 0)
-            ready.push(i);
+    NodeEntry entry;
+    entry.id = id;
+    entry.node = std::move(node);
 
-    schedule_.clear();
-    schedule_.reserve(nodes_.size());
+    indexById_[key] = nodes_.size();
+    nodes_.push_back(std::move(entry));
+    prepared_ = false;
 
-    int visited = 0;
-    while (! ready.empty())
+    return id;
+}
+
+Node* GraphEngine::getNode(const NodeId& id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return getNodeUnlocked(id);
+}
+
+void GraphEngine::setIO(NodeId inputNode, NodeId outputNode)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (! hasNodeUnlocked(inputNode) || ! hasNodeUnlocked(outputNode))
+        throw std::invalid_argument("GraphEngine::setIO: invalid node id");
+
+    inputNode_ = inputNode;
+    outputNode_ = outputNode;
+}
+
+void GraphEngine::connect(NodeId from, NodeId to)
+{
+    if (from == to)
+        throw std::invalid_argument("GraphEngine::connect: cannot connect node to itself");
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (! hasNodeUnlocked(from) || ! hasNodeUnlocked(to))
+        throw std::invalid_argument("GraphEngine::connect: invalid node id");
+
+    const auto fromKey = toKey(from);
+    const auto fromIndex = indexById_.at(fromKey);
+    auto& outputs = nodes_[fromIndex].outputs;
+
+    const bool alreadyConnected = std::any_of(outputs.begin(), outputs.end(),
+                                              [&to](const NodeId& existing) { return existing == to; });
+    if (! alreadyConnected)
+        outputs.push_back(to);
+
+    prepared_ = false;
+}
+
+void GraphEngine::setEngineFormat(double sampleRate, int blockSize)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    sampleRate_ = (sampleRate > 0.0) ? sampleRate : defaultSampleRate;
+    blockSize_ = (blockSize > 0) ? blockSize : defaultBlockSize;
+    prepared_ = false;
+}
+
+void GraphEngine::prepare()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    buildScheduleUnlocked();
+
+    if (schedule_.empty())
     {
-        const int nodeIndex = ready.front();
-        ready.pop();
-        ++visited;
-
-        schedule_.push_back(nodes_[static_cast<size_t>(nodeIndex)].get());
-
-        for (const auto next : adjacency[static_cast<size_t>(nodeIndex)])
-        {
-            auto& deg = indegree[static_cast<size_t>(next)];
-            if (--deg == 0)
-                ready.push(next);
-        }
+        prepared_ = true;
+        return;
     }
 
-    if (visited != nodeCount)
-        throw std::runtime_error("GraphEngine::prepare: graph contains a cycle");
-
-    for (auto* node : schedule_)
-        if (node != nullptr)
+    for (const auto& id : schedule_)
+    {
+        if (auto* node = getNodeUnlocked(id))
             node->prepare(sampleRate_, blockSize_);
-
-    for (auto& channel : scratch_)
-        channel.assign(static_cast<size_t>(blockSize_), 0.0f);
+    }
 
     prepared_ = true;
 }
 
-void GraphEngine::process(float** in, int inCh, int inFrames,
-                          float** out, int outCh, int& outFrames,
-                          double sampleRate, int blockSize)
+int GraphEngine::process(juce::AudioBuffer<float>& buffer)
 {
-    (void) sampleRate;
-    (void) blockSize;
+    std::lock_guard<std::mutex> lock(mutex_);
 
     if (! prepared_ || schedule_.empty())
     {
-        outFrames = 0;
+        buffer.clear();
+        return 0;
+    }
+
+    const int numChannels = buffer.getNumChannels();
+    const int numSamples = buffer.getNumSamples();
+
+    channelPointers_.resize(static_cast<size_t>(std::max(0, numChannels)), nullptr);
+    for (int ch = 0; ch < numChannels; ++ch)
+        channelPointers_[static_cast<size_t>(ch)] = buffer.getWritePointer(ch);
+
+    ProcessContext context {
+        buffer,
+        channelPointers_.empty() ? nullptr : channelPointers_.data(),
+        channelPointers_.empty() ? nullptr : channelPointers_.data(),
+        numChannels,
+        numChannels,
+        sampleRate_,
+        blockSize_,
+        numSamples
+    };
+
+    for (const auto& id : schedule_)
+    {
+        if (auto* node = getNodeUnlocked(id))
+            node->process(context);
+    }
+
+    return buffer.getNumSamples();
+}
+
+std::vector<GraphEngine::NodeId> GraphEngine::getSchedule() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return schedule_;
+}
+
+Node* GraphEngine::getNodeUnlocked(const NodeId& id) const
+{
+    const auto key = toKey(id);
+    const auto it = indexById_.find(key);
+    if (it == indexById_.end())
+        return nullptr;
+
+    const auto idx = it->second;
+    if (idx >= nodes_.size())
+        return nullptr;
+
+    return nodes_[idx].node.get();
+}
+
+bool GraphEngine::hasNodeUnlocked(const NodeId& id) const
+{
+    const auto key = toKey(id);
+    return indexById_.find(key) != indexById_.end();
+}
+
+void GraphEngine::buildScheduleUnlocked()
+{
+    schedule_.clear();
+
+    if (nodes_.empty())
+    {
+        prepared_ = true;
         return;
     }
 
-    const int frames = std::min(inFrames, blockSize_);
-    const int processChannels = maxChannels;
+    const size_t nodeCount = nodes_.size();
+    std::vector<int> indegree(nodeCount, 0);
 
-    for (int ch = 0; ch < processChannels; ++ch)
+    for (const auto& entry : nodes_)
     {
-        float* dst = scratch_[static_cast<size_t>(ch)].data();
-        if (ch < inCh && in != nullptr && in[ch] != nullptr)
-            std::copy_n(in[ch], static_cast<size_t>(frames), dst);
-        else
-            std::fill_n(dst, static_cast<size_t>(frames), 0.0f);
-    }
-
-    float* channelPtrs[maxChannels];
-    for (int ch = 0; ch < processChannels; ++ch)
-        channelPtrs[ch] = scratch_[static_cast<size_t>(ch)].data();
-
-    ProcessCtx ctx{};
-    ctx.in = channelPtrs;
-    ctx.inCh = std::min(inCh, processChannels);
-    ctx.out = channelPtrs;
-    ctx.outCh = std::min(outCh, processChannels);
-    ctx.numFrames = frames;
-    ctx.sampleRate = sampleRate_;
-    ctx.blockSize = blockSize_;
-
-    for (auto* node : schedule_)
-    {
-        if (node == nullptr)
-            continue;
-
-        // TODO(PDC): apply per-edge latency offsets here when fan-out is supported.
-        node->process(ctx);
-    }
-
-    if (out != nullptr)
-    {
-        const int copyChannels = std::min(outCh, processChannels);
-        for (int ch = 0; ch < copyChannels; ++ch)
+        for (const auto& targetId : entry.outputs)
         {
-            if (out[ch] != nullptr)
-                std::copy_n(channelPtrs[ch], static_cast<size_t>(frames), out[ch]);
-        }
+            const auto key = toKey(targetId);
+            const auto targetIt = indexById_.find(key);
+            if (targetIt == indexById_.end())
+                throw std::runtime_error("GraphEngine::prepare: connection references unknown node");
 
-        for (int ch = copyChannels; ch < outCh; ++ch)
-        {
-            if (out[ch] != nullptr)
-                std::fill_n(out[ch], static_cast<size_t>(frames), 0.0f);
+            const auto targetIdx = targetIt->second;
+            if (targetIdx >= nodeCount)
+                throw std::runtime_error("GraphEngine::prepare: connection index out of range");
+
+            ++indegree[targetIdx];
         }
     }
 
-    outFrames = frames;
+    std::queue<size_t> ready;
+    for (size_t i = 0; i < nodeCount; ++i)
+    {
+        if (indegree[i] == 0)
+            ready.push(i);
+    }
+
+    std::vector<size_t> order;
+    order.reserve(nodeCount);
+
+    while (! ready.empty())
+    {
+        const auto idx = ready.front();
+        ready.pop();
+        order.push_back(idx);
+
+        for (const auto& targetId : nodes_[idx].outputs)
+        {
+            const auto targetKey = toKey(targetId);
+            const auto targetIt = indexById_.find(targetKey);
+            if (targetIt == indexById_.end())
+                continue;
+
+            const auto targetIdx = targetIt->second;
+            if (indegree[targetIdx] <= 0)
+                continue;
+
+            --indegree[targetIdx];
+            if (indegree[targetIdx] == 0)
+                ready.push(targetIdx);
+        }
+    }
+
+    if (order.size() != nodeCount)
+        throw std::runtime_error("GraphEngine::prepare: graph contains a cycle");
+
+    schedule_.reserve(nodeCount);
+    for (const auto idx : order)
+        schedule_.push_back(nodes_[idx].id);
 }
 } // namespace host::graph

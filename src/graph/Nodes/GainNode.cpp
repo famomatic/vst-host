@@ -10,14 +10,14 @@ void GainNode::prepare(double sampleRate, int blockSize)
     (void) blockSize;
 }
 
-void GainNode::process(ProcessCtx& ctx)
+void GainNode::process(ProcessContext& ctx)
 {
     const float gain = gain_.load();
     const int frames = std::max(0, ctx.numFrames);
 
-    for (int ch = 0; ch < ctx.outCh; ++ch)
+    for (int ch = 0; ch < ctx.numOutputChannels; ++ch)
     {
-        float* channel = (ctx.out != nullptr) ? ctx.out[ch] : nullptr;
+        float* channel = (ctx.outputChannels != nullptr) ? ctx.outputChannels[ch] : nullptr;
         if (channel == nullptr)
             continue;
 

@@ -1,18 +1,21 @@
 #pragma once
 
-#include <cstddef>
+#include <juce_audio_basics/juce_audio_basics.h>
+
+#include <string>
 
 namespace host::graph
 {
-struct ProcessCtx
+struct ProcessContext
 {
-    float** in = nullptr;
-    int inCh = 0;
-    float** out = nullptr;
-    int outCh = 0;
-    int numFrames = 0;
+    juce::AudioBuffer<float>& audioBuffer;
+    float** inputChannels = nullptr;
+    float** outputChannels = nullptr;
+    int numInputChannels = 0;
+    int numOutputChannels = 0;
     double sampleRate = 0.0;
     int blockSize = 0;
+    int numFrames = 0;
 };
 
 class Node
@@ -21,7 +24,8 @@ public:
     virtual ~Node() = default;
 
     virtual void prepare(double sampleRate, int blockSize) = 0;
-    virtual void process(ProcessCtx& ctx) = 0;
+    virtual void process(ProcessContext& context) = 0;
     virtual int latencySamples() const { return 0; }
+    virtual std::string name() const = 0;
 };
 } // namespace host::graph

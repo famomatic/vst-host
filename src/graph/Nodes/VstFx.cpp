@@ -18,7 +18,7 @@ namespace host::graph::nodes
             instance_->prepare(sampleRate, blockSize);
     }
 
-    void VstFxNode::process(ProcessCtx& ctx)
+    void VstFxNode::process(ProcessContext& ctx)
     {
         if (! instance_ || bypassed_.load())
             return;
@@ -30,7 +30,11 @@ namespace host::graph::nodes
             instance_->prepare(preparedSampleRate_, preparedBlockSize_);
         }
 
-        instance_->process(ctx.in, ctx.inCh, ctx.out, ctx.outCh, ctx.numFrames);
+        instance_->process(ctx.inputChannels,
+                           ctx.numInputChannels,
+                           ctx.outputChannels,
+                           ctx.numOutputChannels,
+                           ctx.numFrames);
     }
 
     int VstFxNode::latencySamples() const noexcept

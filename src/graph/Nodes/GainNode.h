@@ -12,7 +12,7 @@ public:
     void setGain(float newGain) noexcept { gain_.store(newGain); }
 
     void prepare(double sampleRate, int blockSize) override;
-    void process(ProcessCtx& ctx) override;
+    void process(ProcessContext& ctx) override;
 
 private:
     std::atomic<float> gain_ { 1.0f };
