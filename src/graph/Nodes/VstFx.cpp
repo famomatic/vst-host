@@ -4,10 +4,17 @@
 
 namespace host::graph::nodes
 {
-    VstFxNode::VstFxNode(std::unique_ptr<host::plugin::PluginInstance> instance, std::string pluginName)
+    VstFxNode::VstFxNode(std::unique_ptr<host::plugin::PluginInstance> instance,
+                         std::string pluginName,
+                         std::optional<host::plugin::PluginInfo> pluginInfo)
         : instance_(std::move(instance))
         , pluginName_(std::move(pluginName))
     {
+        if (pluginInfo.has_value())
+            pluginInfo_ = std::move(pluginInfo);
+
+        if (pluginName_.empty() && pluginInfo_.has_value())
+            pluginName_ = pluginInfo_->name;
     }
 
     void VstFxNode::prepare(double sampleRate, int blockSize)
@@ -47,5 +54,12 @@ namespace host::graph::nodes
         if (! pluginName_.empty())
             return pluginName_;
         return "VST FX";
+    }
+
+    void VstFxNode::setPluginInfo(host::plugin::PluginInfo info)
+    {
+        pluginInfo_ = std::move(info);
+        if (pluginName_.empty() && pluginInfo_.has_value())
+            pluginName_ = pluginInfo_->name;
     }
 } // namespace host::graph::nodes

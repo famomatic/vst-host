@@ -8,6 +8,7 @@
 #include "gui/PluginBrowser.h"
 #include "gui/Preferences.h"
 #include "host/PluginScanner.h"
+#include "persist/Project.h"
 
 class MainWindow : public juce::DocumentWindow,
                    private juce::MenuBarModel
@@ -29,6 +30,7 @@ private:
     void showDeviceSelector();
     void loadProject();
     void saveProject();
+    void rebuildGraphFromProject(const host::persist::Project& project);
 
     std::shared_ptr<host::graph::GraphEngine> graphEngine;
     std::shared_ptr<host::plugin::PluginScanner> pluginScanner;

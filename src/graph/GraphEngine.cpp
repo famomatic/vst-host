@@ -37,13 +37,39 @@ GraphEngine::NodeId GraphEngine::addNode(std::unique_ptr<Node> node)
         throw std::invalid_argument("GraphEngine::addNode: node must not be null");
 
     std::lock_guard<std::mutex> lock(mutex_);
+    return addNodeUnlocked(std::move(node), std::nullopt);
+}
 
+GraphEngine::NodeId GraphEngine::addNodeWithId(const NodeId& id, std::unique_ptr<Node> node)
+{
+    if (node == nullptr)
+        throw std::invalid_argument("GraphEngine::addNodeWithId: node must not be null");
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return addNodeUnlocked(std::move(node), id);
+}
+
+GraphEngine::NodeId GraphEngine::addNodeUnlocked(std::unique_ptr<Node> node, std::optional<NodeId> requestedId)
+{
     NodeId id;
-    std::string key = toKey(id);
-    while (indexById_.find(key) != indexById_.end())
+    std::string key;
+
+    if (requestedId.has_value())
+    {
+        id = requestedId.value();
+        key = toKey(id);
+        if (indexById_.find(key) != indexById_.end())
+            throw std::invalid_argument("GraphEngine::addNodeWithId: id already exists");
+    }
+    else
     {
         id = NodeId();
         key = toKey(id);
+        while (indexById_.find(key) != indexById_.end())
+        {
+            id = NodeId();
+            key = toKey(id);
+        }
     }
 
     NodeEntry entry;
@@ -167,6 +193,30 @@ std::vector<GraphEngine::NodeId> GraphEngine::getSchedule() const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     return schedule_;
+}
+
+std::vector<std::pair<GraphEngine::NodeId, GraphEngine::NodeId>> GraphEngine::getConnections() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<std::pair<NodeId, NodeId>> connections;
+    for (const auto& node : nodes_)
+    {
+        for (const auto& target : node.outputs)
+            connections.emplace_back(node.id, target);
+    }
+    return connections;
+}
+
+GraphEngine::NodeId GraphEngine::getInputNode() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return inputNode_;
+}
+
+GraphEngine::NodeId GraphEngine::getOutputNode() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return outputNode_;
 }
 
 Node* GraphEngine::getNodeUnlocked(const NodeId& id) const

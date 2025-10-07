@@ -4,7 +4,9 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <mutex>
 #include <optional>
+#include <vector>
 
 #if defined(_WIN32)
  #ifndef NOMINMAX
@@ -242,6 +244,188 @@ namespace
         Steinberg::int64 position { 0 };
     };
 
+    class EventList final : public Steinberg::Vst::IEventList
+    {
+    public:
+        EventList() = default;
+
+        Steinberg::uint32 PLUGIN_API addRef() override { return 1; }
+        Steinberg::uint32 PLUGIN_API release() override { return 1; }
+
+        Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+        {
+            if (obj == nullptr)
+                return Steinberg::kInvalidArgument;
+
+            if (std::memcmp(iid, Steinberg::Vst::IEventList::iid, sizeof(Steinberg::TUID)) == 0
+                || std::memcmp(iid, Steinberg::FUnknown::iid, sizeof(Steinberg::TUID)) == 0)
+            {
+                *obj = static_cast<Steinberg::Vst::IEventList*>(this);
+                addRef();
+                return Steinberg::kResultOk;
+            }
+
+            *obj = nullptr;
+            return Steinberg::kNoInterface;
+        }
+
+        Steinberg::int32 PLUGIN_API getEventCount() override
+        {
+            return static_cast<Steinberg::int32>(events_.size());
+        }
+
+        Steinberg::tresult PLUGIN_API getEvent(Steinberg::int32 index, Steinberg::Vst::Event& e) override
+        {
+            if (index < 0 || index >= static_cast<Steinberg::int32>(events_.size()))
+                return Steinberg::kInvalidArgument;
+
+            e = events_[static_cast<std::size_t>(index)];
+            return Steinberg::kResultOk;
+        }
+
+        Steinberg::tresult PLUGIN_API addEvent(Steinberg::Vst::Event& e) override
+        {
+            events_.push_back(e);
+            return Steinberg::kResultOk;
+        }
+
+        void clear() { events_.clear(); }
+
+    private:
+        std::vector<Steinberg::Vst::Event> events_;
+    };
+
+    class ParamValueQueue final : public Steinberg::Vst::IParamValueQueue
+    {
+    public:
+        explicit ParamValueQueue(Steinberg::Vst::ParamID pid)
+            : paramId_(pid)
+        {
+        }
+
+        Steinberg::uint32 PLUGIN_API addRef() override { return 1; }
+        Steinberg::uint32 PLUGIN_API release() override { return 1; }
+
+        Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+        {
+            if (obj == nullptr)
+                return Steinberg::kInvalidArgument;
+
+            if (std::memcmp(iid, Steinberg::Vst::IParamValueQueue::iid, sizeof(Steinberg::TUID)) == 0
+                || std::memcmp(iid, Steinberg::FUnknown::iid, sizeof(Steinberg::TUID)) == 0)
+            {
+                *obj = static_cast<Steinberg::Vst::IParamValueQueue*>(this);
+                addRef();
+                return Steinberg::kResultOk;
+            }
+
+            *obj = nullptr;
+            return Steinberg::kNoInterface;
+        }
+
+        Steinberg::Vst::ParamID PLUGIN_API getParameterId() override { return paramId_; }
+
+        Steinberg::int32 PLUGIN_API getPointCount() override
+        {
+            return static_cast<Steinberg::int32>(points_.size());
+        }
+
+        Steinberg::tresult PLUGIN_API getPoint(Steinberg::int32 index, Steinberg::int32& sampleOffset, Steinberg::Vst::ParamValue& value) override
+        {
+            if (index < 0 || index >= static_cast<Steinberg::int32>(points_.size()))
+                return Steinberg::kInvalidArgument;
+
+            const auto& point = points_[static_cast<std::size_t>(index)];
+            sampleOffset = point.offset;
+            value = point.value;
+            return Steinberg::kResultOk;
+        }
+
+        Steinberg::tresult PLUGIN_API addPoint(Steinberg::int32 sampleOffset, Steinberg::Vst::ParamValue value, Steinberg::int32& index) override
+        {
+            points_.push_back({ sampleOffset, value });
+            index = static_cast<Steinberg::int32>(points_.size()) - 1;
+            return Steinberg::kResultOk;
+        }
+
+        void clear() { points_.clear(); }
+
+    private:
+        struct Point
+        {
+            Steinberg::int32 offset { 0 };
+            Steinberg::Vst::ParamValue value { 0.0 };
+        };
+
+        Steinberg::Vst::ParamID paramId_;
+        std::vector<Point> points_;
+    };
+
+    class ParameterChanges final : public Steinberg::Vst::IParameterChanges
+    {
+    public:
+        ParameterChanges() = default;
+
+        Steinberg::uint32 PLUGIN_API addRef() override { return 1; }
+        Steinberg::uint32 PLUGIN_API release() override { return 1; }
+
+        Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+        {
+            if (obj == nullptr)
+                return Steinberg::kInvalidArgument;
+
+            if (std::memcmp(iid, Steinberg::Vst::IParameterChanges::iid, sizeof(Steinberg::TUID)) == 0
+                || std::memcmp(iid, Steinberg::FUnknown::iid, sizeof(Steinberg::TUID)) == 0)
+            {
+                *obj = static_cast<Steinberg::Vst::IParameterChanges*>(this);
+                addRef();
+                return Steinberg::kResultOk;
+            }
+
+            *obj = nullptr;
+            return Steinberg::kNoInterface;
+        }
+
+        Steinberg::int32 PLUGIN_API getParameterCount() override
+        {
+            return static_cast<Steinberg::int32>(queues_.size());
+        }
+
+        Steinberg::Vst::IParamValueQueue* PLUGIN_API getParameterData(Steinberg::int32 index) override
+        {
+            if (index < 0 || index >= static_cast<Steinberg::int32>(queues_.size()))
+                return nullptr;
+
+            return queues_[static_cast<std::size_t>(index)].get();
+        }
+
+        Steinberg::Vst::IParamValueQueue* PLUGIN_API addParameterData(const Steinberg::Vst::ParamID& id, Steinberg::int32& index) override
+        {
+            for (std::size_t i = 0; i < queues_.size(); ++i)
+            {
+                if (queues_[i]->getParameterId() == id)
+                {
+                    index = static_cast<Steinberg::int32>(i);
+                    return queues_[i].get();
+                }
+            }
+
+            auto queue = std::make_unique<ParamValueQueue>(id);
+            auto* raw = queue.get();
+            queues_.push_back(std::move(queue));
+            index = static_cast<Steinberg::int32>(queues_.size()) - 1;
+            return raw;
+        }
+
+        void clear()
+        {
+            queues_.clear();
+        }
+
+    private:
+        std::vector<std::unique_ptr<ParamValueQueue>> queues_;
+    };
+
     class Vst3PluginInstance final : public PluginInstance
     {
     public:
@@ -261,6 +445,10 @@ namespace
             , maxInputs(std::clamp(inChannels, 0, kMaxChannels))
             , maxOutputs(std::clamp(outChannels, 0, kMaxChannels))
             , initialized(alreadyInitialized)
+            , inputEvents_(std::make_unique<EventList>())
+            , outputEvents_(std::make_unique<EventList>())
+            , inputParameterChanges_(std::make_unique<ParameterChanges>())
+            , outputParameterChanges_(std::make_unique<ParameterChanges>())
         {
         }
 
@@ -343,7 +531,19 @@ namespace
             data.symbolicSampleSize = Steinberg::Vst::kSample32;
             data.inputs = inputs;
             data.outputs = outputs;
-            // TODO: Attach event queues and parameter changes when automation is supported.
+            if (inputEvents_)
+                inputEvents_->clear();
+            if (outputEvents_)
+                outputEvents_->clear();
+            if (inputParameterChanges_)
+                inputParameterChanges_->clear();
+            if (outputParameterChanges_)
+                outputParameterChanges_->clear();
+
+            data.inputEvents = inputEvents_.get();
+            data.outputEvents = outputEvents_.get();
+            data.inputParameterChanges = inputParameterChanges_.get();
+            data.outputParameterChanges = outputParameterChanges_.get();
 
             processor->process(data);
             latency = static_cast<int>(processor->getLatencySamples());
@@ -458,6 +658,10 @@ namespace
         int latency { 0 };
         int maxInputs { 0 };
         int maxOutputs { 0 };
+        std::unique_ptr<EventList> inputEvents_;
+        std::unique_ptr<EventList> outputEvents_;
+        std::unique_ptr<ParameterChanges> inputParameterChanges_;
+        std::unique_ptr<ParameterChanges> outputParameterChanges_;
     };
 
     constexpr int kVst2MaxChannels = 32;
@@ -486,8 +690,11 @@ namespace
             effect->control(effect, VST_EFFECT_OPCODE_SUSPEND_RESUME, 0, 1, nullptr, 0.0f);
             active = true;
             replacing = (effect->flags & VST_EFFECT_FLAG_SUPPORTS_FLOAT) != 0 && effect->process_float != nullptr;
+            supportsDoublePrecision = (effect->flags & VST_EFFECT_FLAG_SUPPORTS_DOUBLE) != 0 && effect->process_double != nullptr;
 
             scratch.resize(static_cast<std::size_t>(std::max(1, effect->num_outputs) * block));
+            doubleInputScratch.clear();
+            doubleOutputScratch.clear();
             latency = effect->delay;
         }
 
@@ -504,27 +711,86 @@ namespace
 
             std::array<float*, kVst2MaxChannels> inputs {};
             std::array<float*, kVst2MaxChannels> outputs {};
-
-            for (int c = 0; c < outCh; ++c)
+            for (int c = 0; c < kVst2MaxChannels; ++c)
             {
-                inputs[c] = (c < inCh && in[c]) ? in[c] : nullptr;
-                outputs[c] = out[c];
+                inputs[c] = (c < inCh && in[c] != nullptr) ? in[c] : nullptr;
+                outputs[c] = (c < outCh && out[c] != nullptr) ? out[c] : nullptr;
             }
 
-            if (replacing && effect->process_float)
+            if (supportsDoublePrecision && effect->process_double)
             {
-                // TODO: Support double precision processing when available.
-                effect->process_float(effect, inputs.data(), out, numFrames);
+                const std::size_t frameCapacity = static_cast<std::size_t>(std::max(blockSize, numFrames));
+                const std::size_t inRequired = static_cast<std::size_t>(std::max(1, inCh)) * frameCapacity;
+                const std::size_t outRequired = static_cast<std::size_t>(std::max(1, outCh)) * frameCapacity;
+
+                if (doubleInputScratch.size() < inRequired)
+                    doubleInputScratch.resize(inRequired);
+                if (doubleOutputScratch.size() < outRequired)
+                    doubleOutputScratch.resize(outRequired);
+
+                std::array<const double*, kVst2MaxChannels> doubleInputs {};
+                for (int c = 0; c < inCh; ++c)
+                {
+                    auto* dest = doubleInputScratch.data() + static_cast<std::size_t>(c) * frameCapacity;
+                    doubleInputs[static_cast<std::size_t>(c)] = dest;
+
+                    if (inputs[c] != nullptr)
+                    {
+                        const float* source = inputs[c];
+                        for (int i = 0; i < numFrames; ++i)
+                            dest[i] = static_cast<double>(source[i]);
+
+                        if (frameCapacity > static_cast<std::size_t>(numFrames))
+                            std::fill(dest + numFrames, dest + frameCapacity, 0.0);
+                    }
+                    else
+                    {
+                        std::fill(dest, dest + frameCapacity, 0.0);
+                    }
+                }
+
+                std::array<double*, kVst2MaxChannels> doubleOutputs {};
+                for (int c = 0; c < outCh; ++c)
+                {
+                    auto* dest = doubleOutputScratch.data() + static_cast<std::size_t>(c) * frameCapacity;
+                    doubleOutputs[static_cast<std::size_t>(c)] = dest;
+                    std::fill(dest, dest + frameCapacity, 0.0);
+                }
+
+                effect->process_double(effect, doubleInputs.data(), doubleOutputs.data(), numFrames);
+
+                for (int c = 0; c < outCh; ++c)
+                {
+                    float* dest = outputs[c];
+                    const double* src = doubleOutputs[static_cast<std::size_t>(c)];
+                    if (dest == nullptr || src == nullptr)
+                        continue;
+
+                    for (int i = 0; i < numFrames; ++i)
+                        dest[i] = static_cast<float>(src[i]);
+                }
+            }
+            else if (replacing && effect->process_float)
+            {
+                effect->process_float(effect, inputs.data(), outputs.data(), numFrames);
             }
             else if (effect->process)
             {
+                std::array<float*, kVst2MaxChannels> scratchOutputs {};
                 for (int c = 0; c < outCh; ++c)
-                    outputs[c] = scratch.data() + static_cast<std::size_t>(c * blockSize);
+                    scratchOutputs[c] = scratch.data() + static_cast<std::size_t>(c * blockSize);
 
-                effect->process(effect, inputs.data(), outputs.data(), numFrames);
+                effect->process(effect, inputs.data(), scratchOutputs.data(), numFrames);
 
                 for (int c = 0; c < outCh; ++c)
-                    std::copy(outputs[c], outputs[c] + numFrames, out[c]);
+                {
+                    float* dest = outputs[c];
+                    const float* src = scratchOutputs[c];
+                    if (dest == nullptr || src == nullptr)
+                        continue;
+
+                    std::copy(src, src + numFrames, dest);
+                }
             }
 
             latency = effect->delay;
@@ -578,8 +844,11 @@ namespace
         int blockSize { 0 };
         bool active { false };
         bool replacing { false };
+        bool supportsDoublePrecision { false };
         int latency { 0 };
         std::vector<float> scratch;
+        std::vector<double> doubleInputScratch;
+        std::vector<double> doubleOutputScratch;
     };
 
     constexpr int32_t kVstMagic = VST_FOURCC('V', 's', 't', 'P');

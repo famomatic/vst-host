@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace host::graph::nodes
@@ -12,7 +13,9 @@ namespace host::graph::nodes
     class VstFxNode : public Node
     {
     public:
-        VstFxNode(std::unique_ptr<host::plugin::PluginInstance> instance, std::string pluginName = {});
+        VstFxNode(std::unique_ptr<host::plugin::PluginInstance> instance,
+                  std::string pluginName = {},
+                  std::optional<host::plugin::PluginInfo> pluginInfo = std::nullopt);
         ~VstFxNode() override = default;
 
         void setBypassed(bool shouldBypass) noexcept { bypassed_.store(shouldBypass); }
@@ -24,6 +27,8 @@ namespace host::graph::nodes
         std::string name() const override;
 
         [[nodiscard]] host::plugin::PluginInstance* plugin() const noexcept { return instance_.get(); }
+        void setPluginInfo(host::plugin::PluginInfo info);
+        [[nodiscard]] const std::optional<host::plugin::PluginInfo>& pluginInfo() const noexcept { return pluginInfo_; }
 
     private:
         std::unique_ptr<host::plugin::PluginInstance> instance_;
@@ -31,5 +36,6 @@ namespace host::graph::nodes
         std::string pluginName_;
         int preparedBlockSize_ { 0 };
         double preparedSampleRate_ { 0.0 };
+        std::optional<host::plugin::PluginInfo> pluginInfo_;
     };
 }

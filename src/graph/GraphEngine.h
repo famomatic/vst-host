@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -30,6 +31,7 @@ public:
     void clear();
 
     NodeId addNode(std::unique_ptr<Node> node);
+    NodeId addNodeWithId(const NodeId& id, std::unique_ptr<Node> node);
     [[nodiscard]] Node* getNode(const NodeId& id) const;
 
     void setIO(NodeId inputNode, NodeId outputNode);
@@ -40,6 +42,9 @@ public:
     [[nodiscard]] int process(juce::AudioBuffer<float>& buffer);
 
     [[nodiscard]] std::vector<NodeId> getSchedule() const;
+    [[nodiscard]] std::vector<std::pair<NodeId, NodeId>> getConnections() const;
+    [[nodiscard]] NodeId getInputNode() const;
+    [[nodiscard]] NodeId getOutputNode() const;
 
 private:
     struct NodeEntry
@@ -52,6 +57,7 @@ private:
     [[nodiscard]] static std::string toKey(const NodeId& id);
     [[nodiscard]] Node* getNodeUnlocked(const NodeId& id) const;
     [[nodiscard]] bool hasNodeUnlocked(const NodeId& id) const;
+    NodeId addNodeUnlocked(std::unique_ptr<Node> node, std::optional<NodeId> requestedId);
     void buildScheduleUnlocked();
 
     mutable std::mutex mutex_;
