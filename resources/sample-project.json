@@ -1,0 +1,9 @@
+{
+  "name": "Example Project",
+  "version": 1,
+  "nodes": [
+    { "id": "00000000-0000-0000-0000-000000000001", "name": "Audio In", "latency": 0 },
+    { "id": "00000000-0000-0000-0000-000000000002", "name": "VST FX", "latency": 64 },
+    { "id": "00000000-0000-0000-0000-000000000003", "name": "Audio Out", "latency": 0 }
+  ]
+}
