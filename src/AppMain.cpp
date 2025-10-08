@@ -1,4 +1,5 @@
 #include "gui/MainWindow.h"
+#include "util/ConsoleLogger.h"
 
 class VSTHostApplication : public juce::JUCEApplication
 {
@@ -9,12 +10,14 @@ public:
 
     void initialise(const juce::String&) override
     {
+        juce::Logger::setCurrentLogger(&host::util::ConsoleLogger::instance());
         mainWindow = std::make_unique<MainWindow>();
     }
 
     void shutdown() override
     {
         mainWindow.reset();
+        juce::Logger::setCurrentLogger(nullptr);
     }
 
     void systemRequestedQuit() override

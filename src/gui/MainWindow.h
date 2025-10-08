@@ -11,6 +11,11 @@
 #include "persist/Config.h"
 #include "persist/Project.h"
 
+namespace host::gui
+{
+class ConsoleWindow;
+}
+
 class MainWindow : public juce::DocumentWindow,
                    private juce::MenuBarModel,
                    private juce::ChangeListener
@@ -52,6 +57,8 @@ private:
     void showHelpDialog();
     void openPluginSettings(host::graph::GraphEngine::NodeId id);
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
+    void toggleConsoleWindow();
+    void showConsoleWindow();
 
     std::shared_ptr<host::graph::GraphEngine> graphEngine;
     std::shared_ptr<host::plugin::PluginScanner> pluginScanner;
@@ -67,6 +74,7 @@ private:
     juce::Component leftPanel;
     juce::Component rightPanel;
     std::unique_ptr<TrayIcon> trayIcon;
+    std::unique_ptr<host::gui::ConsoleWindow> consoleWindow;
     bool hiddenToTray { false };
     juce::File configDirectory;
     juce::File configFile;

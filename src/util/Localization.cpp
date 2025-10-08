@@ -16,6 +16,7 @@ namespace
         strings.set("menu.file", "File");
         strings.set("menu.edit", "Edit");
         strings.set("menu.view", "View");
+        strings.set("menu.view.console", "Show Console");
         strings.set("menu.help", "Help");
 
         strings.set("menu.file.open", "Open Project...");
@@ -32,6 +33,8 @@ namespace
         strings.set("tray.hide", "Hide");
         strings.set("tray.settings", "Settings...");
         strings.set("tray.exit", "Exit");
+
+        strings.set("console.title", "Console");
 
         strings.set("graph.io", "In %1 / Out %2");
         strings.set("graph.empty", "Graph is empty");
@@ -133,6 +136,7 @@ namespace
         strings.set("menu.file", juce::String::fromUTF8("파일"));
         strings.set("menu.edit", juce::String::fromUTF8("편집"));
         strings.set("menu.view", juce::String::fromUTF8("보기"));
+        strings.set("menu.view.console", juce::String::fromUTF8("콘솔 보기"));
         strings.set("menu.help", juce::String::fromUTF8("도움말"));
 
         strings.set("menu.file.open", juce::String::fromUTF8("프로젝트 열기..."));
@@ -149,6 +153,8 @@ namespace
         strings.set("tray.hide", juce::String::fromUTF8("창 숨기기"));
         strings.set("tray.settings", juce::String::fromUTF8("설정..."));
         strings.set("tray.exit", juce::String::fromUTF8("종료"));
+
+        strings.set("console.title", juce::String::fromUTF8("콘솔"));
 
         strings.set("graph.io", juce::String::fromUTF8("입력 %1 / 출력 %2"));
         strings.set("graph.empty", juce::String::fromUTF8("그래프가 비어 있습니다"));

@@ -17,6 +17,7 @@
 #include "graph/Nodes/Mix.h"
 #include "graph/Nodes/Split.h"
 #include "graph/Nodes/VstFx.h"
+#include "gui/ConsoleWindow.h"
 #include "gui/PluginSettingsComponent.h"
 #include "persist/Project.h"
 #include "util/Localization.h"
@@ -32,7 +33,8 @@ namespace
         menuDeviceSelector,
         menuRescan,
         menuExit,
-        menuHelpShow
+        menuHelpShow,
+        menuViewConsole
     };
 }
 
@@ -233,6 +235,11 @@ juce::PopupMenu MainWindow::getMenuForIndex(int menuIndex, const juce::String&)
     {
         menu.addItem(menuRescan, host::i18n::tr("menu.edit.rescan"));
     }
+    else if (menuIndex == 2)
+    {
+        const bool consoleVisible = consoleWindow != nullptr && consoleWindow->isVisible();
+        menu.addItem(menuViewConsole, host::i18n::tr("menu.view.console"), true, consoleVisible);
+    }
     else if (menuIndex == 3)
     {
         menu.addItem(menuHelpShow, host::i18n::tr("menu.help.show"));
@@ -256,6 +263,7 @@ void MainWindow::menuItemSelected(int menuItemID, int)
             break;
         case menuExit:      exitApplication(); break;
         case menuHelpShow:  showHelpDialog(); break;
+        case menuViewConsole: toggleConsoleWindow(); break;
         default:
             break;
     }
@@ -452,6 +460,8 @@ void MainWindow::refreshTranslations()
     setName(host::i18n::tr("app.title"));
     if (trayIcon)
         trayIcon->setIconTooltip(host::i18n::tr("app.title"));
+    if (consoleWindow)
+        consoleWindow->setName(host::i18n::tr("console.title"));
 
     menuItemsChanged();
     pluginBrowser.refreshTranslations();
@@ -464,6 +474,37 @@ void MainWindow::showHelpDialog()
     juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
                                            host::i18n::tr("help.title"),
                                            host::i18n::tr("help.content"));
+}
+
+void MainWindow::toggleConsoleWindow()
+{
+    if (consoleWindow != nullptr && consoleWindow->isVisible())
+    {
+        consoleWindow->setVisible(false);
+        menuItemsChanged();
+        return;
+    }
+
+    showConsoleWindow();
+    menuItemsChanged();
+}
+
+void MainWindow::showConsoleWindow()
+{
+    if (consoleWindow == nullptr)
+    {
+        consoleWindow = std::make_unique<host::gui::ConsoleWindow>();
+        consoleWindow->setOnHide([this]()
+        {
+            menuItemsChanged();
+        });
+        consoleWindow->centreWithSize(consoleWindow->getWidth(), consoleWindow->getHeight());
+    }
+
+    if (! consoleWindow->isVisible())
+        consoleWindow->setVisible(true);
+
+    consoleWindow->toFront(true);
 }
 
 void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)

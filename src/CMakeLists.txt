@@ -17,11 +17,14 @@ set(SOURCES
     ${SRC_DIR}/graph/Nodes/Mix.h
     ${SRC_DIR}/graph/Nodes/Split.h
     ${SRC_DIR}/graph/Nodes/Merge.h
+    ${SRC_DIR}/gui/ConsoleView.cpp
+    ${SRC_DIR}/gui/ConsoleWindow.cpp
     ${SRC_DIR}/gui/MainWindow.cpp
     ${SRC_DIR}/gui/GraphView.cpp
     ${SRC_DIR}/gui/Preferences.cpp
     ${SRC_DIR}/gui/PluginBrowser.cpp
     ${SRC_DIR}/gui/PluginSettingsComponent.cpp
+    ${SRC_DIR}/util/ConsoleLogger.cpp
     ${SRC_DIR}/util/Localization.cpp
     ${SRC_DIR}/persist/Config.cpp
     ${SRC_DIR}/persist/Project.cpp
