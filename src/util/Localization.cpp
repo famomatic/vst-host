@@ -103,6 +103,9 @@ namespace
         strings.set("plugin.settings.outputs", "Output channels");
         strings.set("plugin.settings.latency", "Reported latency");
         strings.set("plugin.settings.bypass", "Bypass processing");
+        strings.set("plugin.settings.openEditor", "Open plug-in editor");
+        strings.set("plugin.settings.editorUnavailable.title", "Editor unavailable");
+        strings.set("plugin.settings.editorUnavailable.message", "This plug-in does not expose a native editor.");
         strings.set("plugin.settings.notAvailable", "Not available");
         strings.set("plugin.settings.unavailable", "Plugin unavailable");
         strings.set("plugin.settings.samplesLabel", "samples");
@@ -217,6 +220,9 @@ namespace
         strings.set("plugin.settings.outputs", juce::String::fromUTF8("출력 채널"));
         strings.set("plugin.settings.latency", juce::String::fromUTF8("보고된 레이턴시"));
         strings.set("plugin.settings.bypass", juce::String::fromUTF8("이 플러그인 우회"));
+        strings.set("plugin.settings.openEditor", juce::String::fromUTF8("플러그인 편집창 열기"));
+        strings.set("plugin.settings.editorUnavailable.title", juce::String::fromUTF8("편집창을 열 수 없습니다"));
+        strings.set("plugin.settings.editorUnavailable.message", juce::String::fromUTF8("이 플러그인은 고유 편집창을 제공하지 않습니다."));
         strings.set("plugin.settings.notAvailable", juce::String::fromUTF8("정보 없음"));
         strings.set("plugin.settings.unavailable", juce::String::fromUTF8("플러그인을 사용할 수 없습니다"));
         strings.set("plugin.settings.samplesLabel", juce::String::fromUTF8("샘플"));

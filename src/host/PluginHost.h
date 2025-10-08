@@ -1,5 +1,7 @@
 #pragma once
 
+#include <juce_gui_basics/juce_gui_basics.h>
+
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -34,6 +36,8 @@ namespace host::plugin
         [[nodiscard]] virtual int latencySamples() const = 0;
         virtual bool getState(std::vector<std::uint8_t>& out) = 0;
         virtual bool setState(const std::uint8_t* data, std::size_t len) = 0;
+        [[nodiscard]] virtual bool hasEditor() const { return false; }
+        virtual std::unique_ptr<juce::Component> createEditorComponent() { return {}; }
     };
 
     std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info);

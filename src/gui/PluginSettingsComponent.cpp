@@ -98,6 +98,10 @@ PluginSettingsComponent::PluginSettingsComponent(std::shared_ptr<host::graph::Gr
     bypassToggle.onClick = [this]() { applyBypassState(); };
     addAndMakeVisible(bypassToggle);
 
+    openEditorButton.setButtonText(tr("plugin.settings.openEditor"));
+    openEditorButton.onClick = [this]() { openEditor(); };
+    addAndMakeVisible(openEditorButton);
+
     refresh();
 }
 
@@ -134,6 +138,9 @@ void PluginSettingsComponent::resized()
 
     auto bypassRow = area.removeFromTop(kRowHeight);
     bypassToggle.setBounds(bypassRow.removeFromLeft(kLabelWidth + 220));
+
+    auto editorRow = area.removeFromTop(kRowHeight);
+    openEditorButton.setBounds(editorRow.removeFromLeft(kLabelWidth + 220));
 }
 
 void PluginSettingsComponent::updateContent()
@@ -180,6 +187,8 @@ void PluginSettingsComponent::updateContent()
 
     bypassToggle.setToggleState(vstNode->isBypassed(), juce::dontSendNotification);
     bypassToggle.setEnabled(hasInstance);
+    const bool supportsEditor = hasInstance && vstNode->plugin()->hasEditor();
+    openEditorButton.setEnabled(supportsEditor);
 
     latencyValue.setText(formatLatencySamples(vstNode->latencySamples()), juce::dontSendNotification);
 
@@ -255,5 +264,45 @@ void PluginSettingsComponent::applyBypassState()
         onSettingsChanged();
 
     updateContent();
+}
+
+void PluginSettingsComponent::openEditor()
+{
+    auto graphPtr = graph.lock();
+    if (! graphPtr)
+        return;
+
+    auto* node = graphPtr->getNode(targetId);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node);
+    if (! vstNode)
+        return;
+
+    auto* plugin = vstNode->plugin();
+    if (! plugin || ! plugin->hasEditor())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.editorUnavailable.title"),
+                                               tr("plugin.settings.editorUnavailable.message"));
+        return;
+    }
+
+    auto editor = plugin->createEditorComponent();
+    if (! editor)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.editorUnavailable.title"),
+                                               tr("plugin.settings.editorUnavailable.message"));
+        return;
+    }
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(editor.release());
+    options.dialogTitle = juce::String(vstNode->name());
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    options.escapeKeyTriggersCloseButton = true;
+    options.resizable = true;
+    options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
+    options.launchAsync();
 }
 } // namespace host::gui

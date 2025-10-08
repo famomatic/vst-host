@@ -28,6 +28,8 @@ set(SOURCES
     ${SRC_DIR}/persist/Preset.cpp
     ${VST3_SDK_DIR}/pluginterfaces/base/funknown.cpp
     ${VST3_SDK_DIR}/pluginterfaces/base/coreiids.cpp
+    ${VST3_SDK_DIR}/pluginterfaces/base/ustring.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/common/commoniids.cpp
     ${VST3_SDK_DIR}/base/source/fobject.cpp
     ${VST3_SDK_DIR}/base/source/fstring.cpp
     ${VST3_SDK_DIR}/base/source/fstreamer.cpp

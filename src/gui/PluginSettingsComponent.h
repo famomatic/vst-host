@@ -24,6 +24,7 @@ namespace host::gui
         void updateContent();
         void commitNameChange();
         void applyBypassState();
+        void openEditor();
 
         std::weak_ptr<host::graph::GraphEngine> graph;
         host::graph::GraphEngine::NodeId targetId;
@@ -44,6 +45,6 @@ namespace host::gui
         juce::Label latencyLabel;
         juce::Label latencyValue;
         juce::ToggleButton bypassToggle;
+        juce::TextButton openEditorButton;
     };
 } // namespace host::gui
-

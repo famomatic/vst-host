@@ -26,6 +26,7 @@ namespace host::persist
             int inputs { 0 };
             int outputs { 0 };
             int latency { 0 };
+            juce::MemoryBlock pluginState;
         };
 
         struct ConnectionDefinition

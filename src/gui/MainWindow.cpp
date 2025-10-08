@@ -645,6 +645,12 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
                     instance = host::plugin::loadVst2(info);
                 else
                     instance = host::plugin::loadVst3(info);
+
+                if (instance && definition.pluginState.getSize() > 0)
+                {
+                    instance->setState(static_cast<const std::uint8_t*>(definition.pluginState.getData()),
+                                       static_cast<std::size_t>(definition.pluginState.getSize()));
+                }
             }
 
             if (! instance)

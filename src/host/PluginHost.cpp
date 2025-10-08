@@ -10,6 +10,8 @@
 #include <vector>
 #include <filesystem>
 
+#include <juce_gui_basics/juce_gui_basics.h>
+
 #if defined(_WIN32)
  #ifndef NOMINMAX
   #define NOMINMAX 1
@@ -26,9 +28,14 @@
 #include <pluginterfaces/base/ibstream.h>
 #include <pluginterfaces/base/ipluginbase.h>
 #include <pluginterfaces/base/funknown.h>
+#include <pluginterfaces/base/smartpointer.h>
+#include <pluginterfaces/base/ustring.h>
+#include <pluginterfaces/gui/iplugview.h>
+#include <pluginterfaces/gui/iplugviewcontentscalesupport.h>
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
+#include <pluginterfaces/vst/ivsthostapplication.h>
 #include <pluginterfaces/vst/ivstevents.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 #include <pluginterfaces/vst/vsttypes.h>
@@ -52,6 +59,107 @@ namespace host::plugin
 {
 namespace
 {
+    class SimpleHostApplication final : public Steinberg::Vst::IHostApplication
+    {
+    public:
+        SimpleHostApplication() = default;
+        ~SimpleHostApplication() = default;
+
+        Steinberg::tresult PLUGIN_API getName(Steinberg::Vst::String128 name) override
+        {
+            if (name == nullptr)
+                return Steinberg::kInvalidArgument;
+
+            Steinberg::UString wrapper(name, 128);
+            wrapper.fromAscii("VST Host");
+            return Steinberg::kResultOk;
+        }
+
+        Steinberg::tresult PLUGIN_API createInstance(Steinberg::TUID, Steinberg::TUID, void** obj) override
+        {
+            if (obj == nullptr)
+                return Steinberg::kInvalidArgument;
+
+            *obj = nullptr;
+            return Steinberg::kResultFalse;
+        }
+
+        Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+        {
+            if (obj == nullptr)
+                return Steinberg::kInvalidArgument;
+
+            QUERY_INTERFACE(iid, obj, Steinberg::FUnknown::iid, Steinberg::Vst::IHostApplication)
+            QUERY_INTERFACE(iid, obj, Steinberg::Vst::IHostApplication::iid, Steinberg::Vst::IHostApplication)
+
+            *obj = nullptr;
+            return Steinberg::kNoInterface;
+        }
+
+        Steinberg::uint32 PLUGIN_API addRef() override
+        {
+            return ++refCount;
+        }
+
+        Steinberg::uint32 PLUGIN_API release() override
+        {
+            auto remaining = --refCount;
+            if (remaining == 0)
+                delete this;
+            return remaining;
+        }
+
+    private:
+        std::atomic<uint32_t> refCount { 1 };
+    };
+
+    class SimpleComponentHandler final : public Steinberg::Vst::IComponentHandler,
+                                         public Steinberg::Vst::IComponentHandler2
+    {
+    public:
+        SimpleComponentHandler() = default;
+        ~SimpleComponentHandler() = default;
+
+        Steinberg::tresult PLUGIN_API beginEdit(Steinberg::Vst::ParamID) override { return Steinberg::kResultOk; }
+        Steinberg::tresult PLUGIN_API performEdit(Steinberg::Vst::ParamID, Steinberg::Vst::ParamValue) override { return Steinberg::kResultOk; }
+        Steinberg::tresult PLUGIN_API endEdit(Steinberg::Vst::ParamID) override { return Steinberg::kResultOk; }
+        Steinberg::tresult PLUGIN_API restartComponent(Steinberg::int32) override { return Steinberg::kResultOk; }
+
+        Steinberg::tresult PLUGIN_API setDirty(Steinberg::TBool) override { return Steinberg::kResultOk; }
+        Steinberg::tresult PLUGIN_API requestOpenEditor(Steinberg::FIDString) override { return Steinberg::kResultOk; }
+        Steinberg::tresult PLUGIN_API startGroupEdit() override { return Steinberg::kResultOk; }
+        Steinberg::tresult PLUGIN_API finishGroupEdit() override { return Steinberg::kResultOk; }
+
+        Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
+        {
+            if (obj == nullptr)
+                return Steinberg::kInvalidArgument;
+
+            QUERY_INTERFACE(iid, obj, Steinberg::FUnknown::iid, Steinberg::Vst::IComponentHandler)
+            QUERY_INTERFACE(iid, obj, Steinberg::Vst::IComponentHandler::iid, Steinberg::Vst::IComponentHandler)
+            QUERY_INTERFACE(iid, obj, Steinberg::Vst::IComponentHandler2::iid, Steinberg::Vst::IComponentHandler2)
+
+            *obj = nullptr;
+            return Steinberg::kNoInterface;
+        }
+
+        Steinberg::uint32 PLUGIN_API addRef() override
+        {
+            return ++refCount;
+        }
+
+        Steinberg::uint32 PLUGIN_API release() override
+        {
+            auto remaining = --refCount;
+            if (remaining == 0)
+                delete this;
+            return remaining;
+        }
+
+    private:
+        std::atomic<uint32_t> refCount { 1 };
+    };
+
 #if defined(_WIN32)
     using ModuleHandle = HMODULE;
 #else
@@ -534,10 +642,48 @@ namespace
         std::vector<std::unique_ptr<ParamValueQueue>> queues_;
     };
 
+    class Vst3PluginInstance;
+
+    class Vst3EditorComponent final : public juce::Component,
+                                      public Steinberg::IPlugFrame
+    {
+    public:
+        explicit Vst3EditorComponent(Vst3PluginInstance& ownerIn);
+        ~Vst3EditorComponent() override;
+
+        [[nodiscard]] bool isViewAvailable() const noexcept { return view != nullptr; }
+
+        void parentHierarchyChanged() override;
+        void visibilityChanged() override;
+        void focusGained(juce::Component::FocusChangeType cause) override;
+        void focusLost(juce::Component::FocusChangeType cause) override;
+        void resized() override;
+
+        Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override;
+        Steinberg::uint32 PLUGIN_API addRef() override { return 1; }
+        Steinberg::uint32 PLUGIN_API release() override { return 1; }
+        Steinberg::tresult PLUGIN_API resizeView(Steinberg::IPlugView* requestedView, Steinberg::ViewRect* newSize) override;
+
+    private:
+        void ensureView();
+        void adjustToInitialSize();
+        void attachIfPossible();
+        void detachView();
+        void releaseView();
+        void updateScaleFactor();
+
+        Vst3PluginInstance& owner;
+        Steinberg::IPlugView* view { nullptr };
+        Steinberg::IPtr<Steinberg::IPlugViewContentScaleSupport> scaleSupport;
+        bool attached { false };
+    };
+
     class Vst3PluginInstance final : public PluginInstance
     {
     public:
         static constexpr int kMaxChannels = 8;
+
+        friend class Vst3EditorComponent;
 
         Vst3PluginInstance(SharedLibrary&& moduleIn,
                            Steinberg::Vst::IComponent* componentIn,
@@ -547,7 +693,10 @@ namespace
                            int outChannels,
                            Steinberg::Vst::SpeakerArrangement inputArrangementIn,
                            Steinberg::Vst::SpeakerArrangement outputArrangementIn,
-                           bool alreadyInitialized)
+                           bool alreadyInitialized,
+                           Steinberg::IPtr<SimpleHostApplication> hostContextIn,
+                           Steinberg::IPtr<SimpleComponentHandler> componentHandlerIn,
+                           bool controllerIsInitialised)
             : module(std::move(moduleIn))
             , component(componentIn)
             , processor(processorIn)
@@ -558,6 +707,9 @@ namespace
             , inputArrangement(inputArrangementIn)
             , outputArrangement(outputArrangementIn)
             , initialized(alreadyInitialized)
+            , controllerInitialized(controllerIsInitialised)
+            , hostContext(std::move(hostContextIn))
+            , componentHandler(std::move(componentHandlerIn))
             , inputEvents_(std::make_unique<EventList>())
             , outputEvents_(std::make_unique<EventList>())
             , inputParameterChanges_(std::make_unique<ParameterChanges>())
@@ -566,6 +718,16 @@ namespace
         }
 
         ~Vst3PluginInstance() override { shutdown(); }
+
+        [[nodiscard]] bool hasEditor() const override { return controller != nullptr; }
+
+        std::unique_ptr<juce::Component> createEditorComponent() override
+        {
+            auto editor = std::make_unique<Vst3EditorComponent>(*this);
+            if (! editor->isViewAvailable())
+                return {};
+            return editor;
+        }
 
         void prepare(double sr, int block) override
         {
@@ -731,7 +893,7 @@ namespace
             if (initialized || ! component)
                 return;
 
-            if (component->initialize(nullptr) == Steinberg::kResultOk)
+            if (component->initialize(hostContext ? hostContext.get() : nullptr) == Steinberg::kResultOk)
             {
                 if (hasInputBus)
                     component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, true);
@@ -756,6 +918,11 @@ namespace
 
             if (controller)
             {
+                if (controllerInitialized)
+                {
+                    controller->terminate();
+                    controllerInitialized = false;
+                }
                 controller->setComponentHandler(nullptr);
                 controller->release();
                 controller = nullptr;
@@ -790,13 +957,224 @@ namespace
         int latency { 0 };
         int maxInputs { 0 };
         int maxOutputs { 0 };
+        bool controllerInitialized { false };
+        Steinberg::IPtr<SimpleHostApplication> hostContext;
+        Steinberg::IPtr<SimpleComponentHandler> componentHandler;
         std::unique_ptr<EventList> inputEvents_;
         std::unique_ptr<EventList> outputEvents_;
         std::unique_ptr<ParameterChanges> inputParameterChanges_;
         std::unique_ptr<ParameterChanges> outputParameterChanges_;
+
+        Steinberg::IPlugView* createEditorView()
+        {
+            if (! controller)
+                return nullptr;
+
+            return controller->createView(Steinberg::Vst::ViewType::kEditor);
+        }
+
+        void releaseEditorView(Steinberg::IPlugView* viewToRelease)
+        {
+            if (viewToRelease != nullptr)
+                viewToRelease->release();
+        }
     };
 
     constexpr int kVst2MaxChannels = 32;
+
+    Vst3EditorComponent::Vst3EditorComponent(Vst3PluginInstance& ownerIn)
+        : owner(ownerIn)
+    {
+        setOpaque(false);
+        ensureView();
+        adjustToInitialSize();
+    }
+
+    Vst3EditorComponent::~Vst3EditorComponent()
+    {
+        detachView();
+        releaseView();
+    }
+
+    void Vst3EditorComponent::parentHierarchyChanged()
+    {
+        juce::Component::parentHierarchyChanged();
+        attachIfPossible();
+    }
+
+    void Vst3EditorComponent::visibilityChanged()
+    {
+        juce::Component::visibilityChanged();
+        if (isShowing())
+            attachIfPossible();
+        else
+            detachView();
+    }
+
+    void Vst3EditorComponent::focusGained(juce::Component::FocusChangeType cause)
+    {
+        juce::Component::focusGained(cause);
+        if (view)
+            view->onFocus(true);
+    }
+
+    void Vst3EditorComponent::focusLost(juce::Component::FocusChangeType cause)
+    {
+        juce::Component::focusLost(cause);
+        if (view)
+            view->onFocus(false);
+    }
+
+    void Vst3EditorComponent::resized()
+    {
+        juce::Component::resized();
+        if (view && attached)
+        {
+            Steinberg::ViewRect rect { 0, 0, getWidth(), getHeight() };
+            view->onSize(&rect);
+        }
+    }
+
+    Steinberg::tresult PLUGIN_API Vst3EditorComponent::queryInterface(const Steinberg::TUID iid, void** obj)
+    {
+        if (obj == nullptr)
+            return Steinberg::kInvalidArgument;
+
+        if (Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::FUnknown::iid)
+            || Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::IPlugFrame::iid))
+        {
+            *obj = static_cast<Steinberg::IPlugFrame*>(this);
+            addRef();
+            return Steinberg::kResultOk;
+        }
+
+        *obj = nullptr;
+        return Steinberg::kNoInterface;
+    }
+
+    Steinberg::tresult PLUGIN_API Vst3EditorComponent::resizeView(Steinberg::IPlugView* requestedView, Steinberg::ViewRect* newSize)
+    {
+        if (requestedView != view || newSize == nullptr)
+            return Steinberg::kInvalidArgument;
+
+        const int width = newSize->right - newSize->left;
+        const int height = newSize->bottom - newSize->top;
+
+        juce::Component::SafePointer<Vst3EditorComponent> safeComponent(this);
+        Steinberg::IPtr<Steinberg::IPlugView> retained(requestedView);
+        juce::MessageManager::callAsync([safeComponent, width, height, retained]()
+        {
+            if (auto* comp = safeComponent.getComponent())
+            {
+                comp->setSize(width, height);
+                Steinberg::ViewRect rect { 0, 0, width, height };
+                retained->onSize(&rect);
+            }
+        });
+
+        return Steinberg::kResultOk;
+    }
+
+    void Vst3EditorComponent::ensureView()
+    {
+        if (view)
+            return;
+
+        view = owner.createEditorView();
+        if (! view)
+            return;
+
+        Steinberg::IPlugViewContentScaleSupport* support = nullptr;
+        if (view->queryInterface(Steinberg::IPlugViewContentScaleSupport::iid, reinterpret_cast<void**>(&support)) == Steinberg::kResultOk && support != nullptr)
+            scaleSupport = Steinberg::IPtr<Steinberg::IPlugViewContentScaleSupport>::adopt(support);
+
+        adjustToInitialSize();
+    }
+
+    void Vst3EditorComponent::adjustToInitialSize()
+    {
+        if (! view)
+            return;
+
+        Steinberg::ViewRect rect {};
+        if (view->getSize(&rect) == Steinberg::kResultOk)
+        {
+            const int initialWidth = rect.right - rect.left;
+            const int initialHeight = rect.bottom - rect.top;
+            if (initialWidth > 0 && initialHeight > 0)
+                setSize(initialWidth, initialHeight);
+        }
+    }
+
+    void Vst3EditorComponent::attachIfPossible()
+    {
+        if (attached || ! isShowing())
+            return;
+
+        ensureView();
+        if (! view)
+            return;
+
+        if (auto* peer = getPeer())
+        {
+            void* nativeHandle = peer->getNativeHandle();
+            if (nativeHandle == nullptr)
+                return;
+
+            const char* platformType = nullptr;
+           #if JUCE_WINDOWS
+            platformType = Steinberg::kPlatformTypeHWND;
+           #elif JUCE_MAC
+            platformType = Steinberg::kPlatformTypeNSView;
+           #else
+            platformType = Steinberg::kPlatformTypeX11EmbedWindowID;
+           #endif
+
+            if (view->isPlatformTypeSupported(platformType) != Steinberg::kResultTrue)
+                return;
+
+            if (view->attached(nativeHandle, platformType) == Steinberg::kResultOk)
+            {
+                view->setFrame(this);
+                attached = true;
+                updateScaleFactor();
+                Steinberg::ViewRect rect { 0, 0, getWidth(), getHeight() };
+                view->onSize(&rect);
+            }
+        }
+    }
+
+    void Vst3EditorComponent::detachView()
+    {
+        if (! view || ! attached)
+            return;
+
+        view->setFrame(nullptr);
+        view->removed();
+        attached = false;
+    }
+
+    void Vst3EditorComponent::releaseView()
+    {
+        scaleSupport = nullptr;
+        if (view)
+        {
+            owner.releaseEditorView(view);
+            view = nullptr;
+        }
+    }
+
+    void Vst3EditorComponent::updateScaleFactor()
+    {
+        if (! scaleSupport || ! view)
+            return;
+
+        if (auto* peer = getPeer())
+        {
+            const auto scale = peer->getPlatformScaleFactor();
+            scaleSupport->setContentScaleFactor(scale);
+        }
+    }
 
     class Vst2PluginInstance final : public PluginInstance
     {
@@ -954,6 +1332,9 @@ namespace
             return result == 1;
         }
 
+        [[nodiscard]] bool hasEditor() const override { return false; }
+        std::unique_ptr<juce::Component> createEditorComponent() override { return {}; }
+
     private:
         void shutdown()
         {
@@ -1043,6 +1424,21 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     Steinberg::Vst::IAudioProcessor* processor = nullptr;
     Steinberg::Vst::IEditController* controller = nullptr;
 
+    auto hostContext = Steinberg::IPtr<SimpleHostApplication>(new SimpleHostApplication());
+    auto componentHandler = Steinberg::IPtr<SimpleComponentHandler>(new SimpleComponentHandler());
+    auto releaseController = [&](bool terminate)
+    {
+        if (controller)
+        {
+            if (terminate)
+                controller->terminate();
+            controller->setComponentHandler(nullptr);
+            controller->release();
+            controller = nullptr;
+        }
+    };
+    bool controllerInitialized = false;
+
     const auto count = factory->countClasses();
     for (Steinberg::int32 i = 0; i < count; ++i)
     {
@@ -1066,29 +1462,40 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
             continue;
         }
 
-        if (factory->createInstance(classInfo.cid, Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controller)) == Steinberg::kResultOk && controller)
-        {
-            if (controller->initialize(nullptr) != Steinberg::kResultOk)
-            {
-                controller->release();
-                controller = nullptr;
-            }
-        }
+        factory->createInstance(classInfo.cid, Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controller));
         break;
     }
 
     factory->release();
 
+    if (! controller && component)
+    {
+        if (component->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controller)) != Steinberg::kResultOk)
+            controller = nullptr;
+    }
+
     if (! component || ! processor)
         return nullptr;
 
-    if (component->initialize(nullptr) != Steinberg::kResultOk)
+    if (component->initialize(hostContext.get()) != Steinberg::kResultOk)
     {
         processor->release();
         component->release();
-        if (controller)
-            controller->release();
+        releaseController(false);
         return nullptr;
+    }
+
+    if (controller)
+    {
+        controller->setComponentHandler(componentHandler);
+        if (controller->initialize(hostContext.get()) != Steinberg::kResultOk)
+        {
+            releaseController(false);
+        }
+        else
+        {
+            controllerInitialized = true;
+        }
     }
 
     const auto inputBusCount = component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kInput);
@@ -1099,8 +1506,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         component->terminate();
         processor->release();
         component->release();
-        if (controller)
-            controller->release();
+        releaseController(controllerInitialized);
         return nullptr;
     }
 
@@ -1117,8 +1523,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
             component->terminate();
             processor->release();
             component->release();
-            if (controller)
-                controller->release();
+            releaseController(controllerInitialized);
             return nullptr;
         }
 
@@ -1139,8 +1544,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         component->terminate();
         processor->release();
         component->release();
-        if (controller)
-            controller->release();
+        releaseController(controllerInitialized);
         return nullptr;
     }
 
@@ -1161,7 +1565,10 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
                                                 outputChannels,
                                                 inputArrangement,
                                                 outputArrangement,
-                                                true);
+                                                true,
+                                                std::move(hostContext),
+                                                std::move(componentHandler),
+                                                controllerInitialized);
 }
 
 std::unique_ptr<PluginInstance> loadVst2(const PluginInfo& info)

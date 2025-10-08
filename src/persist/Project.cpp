@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <vector>
 
 #include "graph/Nodes/AudioIn.h"
 #include "graph/Nodes/AudioOut.h"
@@ -141,6 +142,11 @@ namespace
                         definition.inputs = readInt(nodeObj->getProperty("inputs"));
                         definition.outputs = readInt(nodeObj->getProperty("outputs"));
                         definition.latency = readInt(nodeObj->getProperty("latency"));
+                        const auto stateVar = nodeObj->getProperty("pluginState");
+                        if (stateVar.isString())
+                        {
+                            definition.pluginState.fromBase64Encoding(stateVar.toString());
+                        }
                         nodes.push_back(std::move(definition));
                     }
                 }
@@ -215,6 +221,16 @@ namespace
                         nodeObj->setProperty("inputs", info->ins);
                         nodeObj->setProperty("outputs", info->outs);
                         nodeObj->setProperty("pluginLatency", info->latency);
+                    }
+
+                    if (auto* instance = vstNode->plugin())
+                    {
+                        std::vector<std::uint8_t> stateData;
+                        if (instance->getState(stateData) && ! stateData.empty())
+                        {
+                            juce::MemoryBlock block(stateData.data(), stateData.size());
+                            nodeObj->setProperty("pluginState", block.toBase64Encoding());
+                        }
                     }
                 }
 
