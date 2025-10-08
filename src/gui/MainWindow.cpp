@@ -513,8 +513,33 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
         return;
 
     auto* node = graphEngine->getNode(id);
-    if (dynamic_cast<host::graph::nodes::VstFxNode*>(node) == nullptr)
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node);
+    if (vstNode == nullptr)
         return;
+
+    if (auto* plugin = vstNode->plugin())
+    {
+        if (plugin->hasEditor())
+        {
+            if (auto editor = plugin->createEditorComponent())
+            {
+                juce::DialogWindow::LaunchOptions options;
+                options.content.setOwned(editor.release());
+                options.dialogTitle = juce::String(vstNode->name());
+                options.componentToCentreAround = this;
+                options.useNativeTitleBar = true;
+                options.resizable = true;
+                options.escapeKeyTriggersCloseButton = true;
+                options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
+                options.launchAsync();
+                return;
+            }
+        }
+
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               host::i18n::tr("plugin.settings.editorUnavailable.title"),
+                                               host::i18n::tr("plugin.settings.editorUnavailable.message"));
+    }
 
     auto settingsComponent = std::make_unique<host::gui::PluginSettingsComponent>(graphEngine,
                                                                                   id,
