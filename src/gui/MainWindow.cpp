@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include "graph/Nodes/AudioIn.h"
@@ -533,29 +534,33 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
         {
             if (auto editor = plugin->createEditorComponent())
             {
-                auto* editorPtr = editor.get();
-                const bool editorResizable = editorPtr->isResizable();
+                auto* editorComponent = editor.get();
+                auto* audioProcessorEditor = dynamic_cast<juce::AudioProcessorEditor*>(editorComponent);
+                const bool editorResizable = audioProcessorEditor != nullptr && audioProcessorEditor->isResizable();
 
-                int preferredContentWidth = juce::jmax(1, editorPtr->getWidth());
-                int preferredContentHeight = juce::jmax(1, editorPtr->getHeight());
+                int preferredContentWidth = juce::jmax(1, editorComponent->getWidth());
+                int preferredContentHeight = juce::jmax(1, editorComponent->getHeight());
 
                 int minContentWidth = editorResizable ? kPluginEditorMinWidth : preferredContentWidth;
                 int minContentHeight = editorResizable ? kPluginEditorMinHeight : preferredContentHeight;
                 int maxContentWidth = editorResizable ? kPluginEditorMaxWidth : preferredContentWidth;
                 int maxContentHeight = editorResizable ? kPluginEditorMaxHeight : preferredContentHeight;
 
-                if (auto* constrainer = editorPtr->getConstrainer())
+                if (audioProcessorEditor != nullptr)
                 {
-                    minContentWidth = juce::jmax(minContentWidth, constrainer->getMinimumWidth());
-                    minContentHeight = juce::jmax(minContentHeight, constrainer->getMinimumHeight());
+                    if (auto* constrainer = audioProcessorEditor->getConstrainer())
+                    {
+                        minContentWidth = juce::jmax(minContentWidth, constrainer->getMinimumWidth());
+                        minContentHeight = juce::jmax(minContentHeight, constrainer->getMinimumHeight());
 
-                    const int constrainerMaxWidth = constrainer->getMaximumWidth();
-                    if (constrainerMaxWidth > 0)
-                        maxContentWidth = juce::jmin(maxContentWidth, constrainerMaxWidth);
+                        const int constrainerMaxWidth = constrainer->getMaximumWidth();
+                        if (constrainerMaxWidth > 0)
+                            maxContentWidth = juce::jmin(maxContentWidth, constrainerMaxWidth);
 
-                    const int constrainerMaxHeight = constrainer->getMaximumHeight();
-                    if (constrainerMaxHeight > 0)
-                        maxContentHeight = juce::jmin(maxContentHeight, constrainerMaxHeight);
+                        const int constrainerMaxHeight = constrainer->getMaximumHeight();
+                        if (constrainerMaxHeight > 0)
+                            maxContentHeight = juce::jmin(maxContentHeight, constrainerMaxHeight);
+                    }
                 }
 
                 if (! editorResizable)
@@ -572,8 +577,8 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
                 const int clampedContentWidth = juce::jlimit(minContentWidth, resolvedMaxContentWidth, preferredContentWidth);
                 const int clampedContentHeight = juce::jlimit(minContentHeight, resolvedMaxContentHeight, preferredContentHeight);
 
-                if (editorPtr->getWidth() != clampedContentWidth || editorPtr->getHeight() != clampedContentHeight)
-                    editorPtr->setSize(clampedContentWidth, clampedContentHeight);
+                if (editorComponent->getWidth() != clampedContentWidth || editorComponent->getHeight() != clampedContentHeight)
+                    editorComponent->setSize(clampedContentWidth, clampedContentHeight);
 
                 juce::DialogWindow::LaunchOptions options;
                 options.content.setOwned(editor.release());
