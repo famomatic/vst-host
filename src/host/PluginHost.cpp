@@ -439,6 +439,8 @@ namespace
                            Steinberg::Vst::IEditController* controllerIn,
                            int inChannels,
                            int outChannels,
+                           Steinberg::Vst::SpeakerArrangement inputArrangementIn,
+                           Steinberg::Vst::SpeakerArrangement outputArrangementIn,
                            bool alreadyInitialized)
             : module(std::move(moduleIn))
             , component(componentIn)
@@ -446,6 +448,9 @@ namespace
             , controller(controllerIn)
             , maxInputs(std::clamp(inChannels, 0, kMaxChannels))
             , maxOutputs(std::clamp(outChannels, 0, kMaxChannels))
+            , hasInputBus(inChannels > 0)
+            , inputArrangement(inputArrangementIn)
+            , outputArrangement(outputArrangementIn)
             , initialized(alreadyInitialized)
             , inputEvents_(std::make_unique<EventList>())
             , outputEvents_(std::make_unique<EventList>())
@@ -475,9 +480,11 @@ namespace
                 active = false;
             }
 
-            Steinberg::Vst::SpeakerArrangement inArr = Steinberg::Vst::SpeakerArr::kStereo;
-            Steinberg::Vst::SpeakerArrangement outArr = Steinberg::Vst::SpeakerArr::kStereo;
-            if (processor->setBusArrangements(&inArr, 1, &outArr, 1) != Steinberg::kResultOk)
+            Steinberg::Vst::SpeakerArrangement inArr = inputArrangement;
+            Steinberg::Vst::SpeakerArrangement outArr = outputArrangement;
+            Steinberg::Vst::SpeakerArrangement* inArrPtr = hasInputBus ? &inArr : nullptr;
+            const Steinberg::int32 inBusCount = hasInputBus ? 1 : 0;
+            if (processor->setBusArrangements(inArrPtr, inBusCount, &outArr, 1) != Steinberg::kResultOk)
                 return;
 
             setup.processMode = Steinberg::Vst::kRealtime;
@@ -498,13 +505,19 @@ namespace
 
         void process(float** in, int inCh, float** out, int outCh, int numFrames) override
         {
-            if (! processor || ! processing || ! in || ! out)
+            if (! processor || ! processing || ! out)
+                return;
+
+            if (hasInputBus && ! in)
                 return;
 
             std::array<float*, 8> inputPtrs {};
             std::array<float*, 8> outputPtrs {};
-            const int usedInputs = std::min(maxInputs, static_cast<int>(inputPtrs.size()));
+            const int usedInputs = hasInputBus ? std::min(maxInputs, static_cast<int>(inputPtrs.size())) : 0;
             const int usedOutputs = std::min(maxOutputs, static_cast<int>(outputPtrs.size()));
+
+            if (usedOutputs <= 0)
+                return;
 
             if (inCh < usedInputs || outCh < usedOutputs)
                 return;
@@ -515,24 +528,31 @@ namespace
             for (int ch = 0; ch < usedOutputs; ++ch)
                 outputPtrs[static_cast<std::size_t>(ch)] = out[ch];
 
-            Steinberg::Vst::AudioBusBuffers inputs[1] {};
-            Steinberg::Vst::AudioBusBuffers outputs[1] {};
+            Steinberg::Vst::AudioBusBuffers inputBus {};
+            Steinberg::Vst::AudioBusBuffers outputBus {};
 
-            inputs[0].numChannels = usedInputs;
-            inputs[0].silenceFlags = 0;
-            inputs[0].channelBuffers32 = inputPtrs.data();
+            Steinberg::Vst::AudioBusBuffers* inputArray = nullptr;
+            Steinberg::int32 numInputBuses = 0;
+            if (hasInputBus)
+            {
+                inputBus.numChannels = usedInputs;
+                inputBus.silenceFlags = 0;
+                inputBus.channelBuffers32 = inputPtrs.data();
+                inputArray = &inputBus;
+                numInputBuses = 1;
+            }
 
-            outputs[0].numChannels = usedOutputs;
-            outputs[0].silenceFlags = 0;
-            outputs[0].channelBuffers32 = outputPtrs.data();
+            outputBus.numChannels = usedOutputs;
+            outputBus.silenceFlags = 0;
+            outputBus.channelBuffers32 = outputPtrs.data();
 
             Steinberg::Vst::ProcessData data {};
-            data.numInputs = 1;
+            data.numInputs = numInputBuses;
             data.numOutputs = 1;
             data.numSamples = numFrames;
             data.symbolicSampleSize = Steinberg::Vst::kSample32;
-            data.inputs = inputs;
-            data.outputs = outputs;
+            data.inputs = inputArray;
+            data.outputs = &outputBus;
             if (inputEvents_)
                 inputEvents_->clear();
             if (outputEvents_)
@@ -607,7 +627,8 @@ namespace
 
             if (component->initialize(nullptr) == Steinberg::kResultOk)
             {
-                component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, true);
+                if (hasInputBus)
+                    component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, true);
                 component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, true);
                 initialized = true;
             }
@@ -654,6 +675,9 @@ namespace
         Steinberg::Vst::IAudioProcessor* processor { nullptr };
         Steinberg::Vst::IEditController* controller { nullptr };
         Steinberg::Vst::ProcessSetup setup {};
+        bool hasInputBus { false };
+        Steinberg::Vst::SpeakerArrangement inputArrangement { Steinberg::Vst::SpeakerArr::kEmpty };
+        Steinberg::Vst::SpeakerArrangement outputArrangement { Steinberg::Vst::SpeakerArr::kStereo };
         bool initialized { false };
         bool active { false };
         bool processing { false };
@@ -883,6 +907,14 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     const bool hasRequestedId = ! info.id.empty() && requestedClassId.fromString(info.id.c_str());
 
     Steinberg::PClassInfo classInfo {};
+    const auto categorySupported = [](const char* category) -> bool
+    {
+        if (category == nullptr)
+            return false;
+
+        return std::strcmp(category, kVstAudioEffectClass) == 0
+               || std::strstr(category, "Instrument") != nullptr;
+    };
     Steinberg::Vst::IComponent* component = nullptr;
     Steinberg::Vst::IAudioProcessor* processor = nullptr;
     Steinberg::Vst::IEditController* controller = nullptr;
@@ -893,7 +925,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         if (factory->getClassInfo(i, &classInfo) != Steinberg::kResultOk)
             continue;
 
-        if (std::strcmp(classInfo.category, kVstAudioEffectClass) != 0)
+        if (! categorySupported(classInfo.category))
             continue;
 
         Steinberg::FUID currentId(classInfo.cid);
@@ -935,12 +967,10 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         return nullptr;
     }
 
-    Steinberg::Vst::BusInfo inBus {};
-    Steinberg::Vst::BusInfo outBus {};
-    if (component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kInput) <= 0 || component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput) <= 0 ||
-        component->getBusInfo(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, inBus) != Steinberg::kResultOk ||
-        component->getBusInfo(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, outBus) != Steinberg::kResultOk ||
-        inBus.channelCount != info.ins || outBus.channelCount != info.outs)
+    const auto inputBusCount = component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kInput);
+    const auto outputBusCount = component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput);
+
+    if (outputBusCount <= 0)
     {
         component->terminate();
         processor->release();
@@ -950,10 +980,64 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         return nullptr;
     }
 
-    component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, true);
-    component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, true);
+    Steinberg::Vst::BusInfo inBus {};
+    Steinberg::Vst::BusInfo outBus {};
+    Steinberg::Vst::SpeakerArrangement inputArrangement = Steinberg::Vst::SpeakerArr::kEmpty;
+    Steinberg::Vst::SpeakerArrangement outputArrangement = Steinberg::Vst::SpeakerArr::kStereo;
 
-    return std::make_unique<Vst3PluginInstance>(std::move(module), component, processor, controller, info.ins, info.outs, true);
+    int inputChannels = 0;
+    if (inputBusCount > 0)
+    {
+        if (component->getBusInfo(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, inBus) != Steinberg::kResultOk)
+        {
+            component->terminate();
+            processor->release();
+            component->release();
+            if (controller)
+                controller->release();
+            return nullptr;
+        }
+
+        inputChannels = static_cast<int>(inBus.channelCount);
+        component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, true);
+        processor->getBusArrangement(Steinberg::Vst::kInput, 0, inputArrangement);
+        if (inputArrangement == Steinberg::Vst::SpeakerArr::kEmpty)
+        {
+            if (inputChannels == 1)
+                inputArrangement = Steinberg::Vst::SpeakerArr::kMono;
+            else if (inputChannels == 2)
+                inputArrangement = Steinberg::Vst::SpeakerArr::kStereo;
+        }
+    }
+
+    if (component->getBusInfo(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, outBus) != Steinberg::kResultOk || outBus.channelCount <= 0)
+    {
+        component->terminate();
+        processor->release();
+        component->release();
+        if (controller)
+            controller->release();
+        return nullptr;
+    }
+
+    const int outputChannels = static_cast<int>(outBus.channelCount);
+    component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, true);
+    processor->getBusArrangement(Steinberg::Vst::kOutput, 0, outputArrangement);
+
+    if (outputArrangement == Steinberg::Vst::SpeakerArr::kEmpty && outputChannels == 2)
+        outputArrangement = Steinberg::Vst::SpeakerArr::kStereo;
+    else if (outputArrangement == Steinberg::Vst::SpeakerArr::kEmpty && outputChannels == 1)
+        outputArrangement = Steinberg::Vst::SpeakerArr::kMono;
+
+    return std::make_unique<Vst3PluginInstance>(std::move(module),
+                                                component,
+                                                processor,
+                                                controller,
+                                                inputChannels,
+                                                outputChannels,
+                                                inputArrangement,
+                                                outputArrangement,
+                                                true);
 }
 
 std::unique_ptr<PluginInstance> loadVst2(const PluginInfo& info)

@@ -82,8 +82,7 @@ namespace host::gui
 
     void PluginBrowser::listBoxItemClicked(int row, const juce::MouseEvent& event)
     {
-        if (event.getNumberOfClicks() > 1)
-            triggerAddPlugin(row);
+        juce::ignoreUnused(row, event);
     }
 
     void PluginBrowser::listBoxItemDoubleClicked(int row, const juce::MouseEvent&)
