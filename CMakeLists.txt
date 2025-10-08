@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 if(MSVC)
-    add_compile_options(/permissive- /Zc:__cplusplus /EHsc /O2 /DNDEBUG)
+    add_compile_options(/permissive- /Zc:__cplusplus /EHsc /O2 /DNDEBUG /utf-8)
 endif()
 
 add_definitions(-DVST3_SDK -DENABLE_VST2)
