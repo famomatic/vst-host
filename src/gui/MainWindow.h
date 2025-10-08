@@ -50,6 +50,7 @@ private:
     std::vector<juce::File> getDefaultPluginDirectories() const;
     void refreshTranslations();
     void showHelpDialog();
+    void openPluginSettings(host::graph::GraphEngine::NodeId id);
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
 
     std::shared_ptr<host::graph::GraphEngine> graphEngine;

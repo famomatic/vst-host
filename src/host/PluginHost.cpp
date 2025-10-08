@@ -6,7 +6,9 @@
 #include <cstring>
 #include <mutex>
 #include <optional>
+#include <cctype>
 #include <vector>
+#include <filesystem>
 
 #if defined(_WIN32)
  #ifndef NOMINMAX
@@ -55,6 +57,110 @@ namespace
 #else
     using ModuleHandle = void*;
 #endif
+
+    [[nodiscard]] std::string toLowerCopy(std::string input)
+    {
+        std::transform(input.begin(), input.end(), input.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return input;
+    }
+
+    [[nodiscard]] bool isLikelyMacOsBinary(const std::filesystem::path& candidate)
+    {
+        const auto parent = toLowerCopy(candidate.parent_path().filename().string());
+        return parent == "macos";
+    }
+
+    [[nodiscard]] bool isCandidateModuleFile(const std::filesystem::path& path)
+    {
+        auto ext = toLowerCopy(path.extension().string());
+        if (ext == ".vst3" || ext == ".dll" || ext == ".so" || ext == ".dylib")
+            return true;
+
+        if (ext.empty() && isLikelyMacOsBinary(path))
+            return true;
+
+        return false;
+    }
+
+    [[nodiscard]] std::optional<std::filesystem::path> findModuleInDirectory(const std::filesystem::path& root)
+    {
+        std::error_code ec;
+        const auto options = std::filesystem::directory_options::follow_directory_symlink
+                             | std::filesystem::directory_options::skip_permission_denied;
+        for (std::filesystem::recursive_directory_iterator it(root, options, ec), end; ! ec && it != end; ++it)
+        {
+            std::error_code statusEc;
+            if (! it->is_regular_file(statusEc) || statusEc)
+                continue;
+
+            const auto candidate = it->path();
+            if (isCandidateModuleFile(candidate))
+                return candidate;
+        }
+
+        if (ec)
+            return std::nullopt;
+
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<std::filesystem::path> resolveVst3ModulePath(const std::filesystem::path& providedPath)
+    {
+        if (providedPath.empty())
+            return std::nullopt;
+
+        std::error_code ec;
+        if (! std::filesystem::exists(providedPath, ec) || ec)
+            return std::nullopt;
+
+        if (std::filesystem::is_regular_file(providedPath, ec) && ! ec)
+        {
+            if (isCandidateModuleFile(providedPath))
+                return providedPath;
+        }
+
+        if (! std::filesystem::is_directory(providedPath, ec) || ec)
+            return std::nullopt;
+
+        std::vector<std::filesystem::path> searchRoots;
+        searchRoots.push_back(providedPath);
+
+        const std::filesystem::path contentsPath = providedPath / "Contents";
+        if (std::filesystem::exists(contentsPath, ec) && ! ec && std::filesystem::is_directory(contentsPath, ec) && ! ec)
+        {
+            searchRoots.push_back(contentsPath);
+
+            const std::array<std::string, 4> preferredDirs { "x86_64-win", "x86_64-linux", "MacOS", "Resources" };
+            for (const auto& name : preferredDirs)
+            {
+                const auto preferred = contentsPath / name;
+                if (std::filesystem::exists(preferred, ec) && ! ec && std::filesystem::is_directory(preferred, ec) && ! ec)
+                    searchRoots.push_back(preferred);
+            }
+
+            std::error_code dirEc;
+            for (std::filesystem::directory_iterator dirIt(contentsPath, std::filesystem::directory_options::skip_permission_denied, dirEc), end;
+                 ! dirEc && dirIt != end;
+                 ++dirIt)
+            {
+                if (! dirIt->is_directory())
+                    continue;
+
+                const auto& path = dirIt->path();
+                if (std::find(searchRoots.begin(), searchRoots.end(), path) == searchRoots.end())
+                    searchRoots.push_back(path);
+            }
+        }
+
+        for (const auto& root : searchRoots)
+        {
+            if (const auto found = findModuleInDirectory(root))
+                return found;
+        }
+
+        return std::nullopt;
+    }
 
     class SharedLibrary
     {
@@ -890,8 +996,26 @@ namespace
 
 std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
 {
+    auto modulePath = info.path;
+
+    if (modulePath.empty())
+        return nullptr;
+
+    std::error_code ec;
+    const bool isRegularFile = std::filesystem::is_regular_file(modulePath, ec);
+    if (ec)
+        return nullptr;
+
+    if ((! isRegularFile || ! isCandidateModuleFile(modulePath)) && info.format == PluginFormat::VST3)
+    {
+        const auto resolved = resolveVst3ModulePath(modulePath);
+        if (! resolved.has_value())
+            return nullptr;
+        modulePath = *resolved;
+    }
+
     SharedLibrary module;
-    if (! module.load(info.path))
+    if (! module.load(modulePath))
         return nullptr;
 
     using GetFactoryProc = Steinberg::IPluginFactory*(*)();

@@ -17,6 +17,7 @@
 #include "graph/Nodes/Mix.h"
 #include "graph/Nodes/Split.h"
 #include "graph/Nodes/VstFx.h"
+#include "gui/PluginSettingsComponent.h"
 #include "persist/Project.h"
 #include "util/Localization.h"
 
@@ -134,6 +135,10 @@ MainWindow::MainWindow()
         addPluginToGraph(info);
     });
     graphView.setGraph(graphEngine);
+    graphView.setOnRequestNodeSettings([this](host::graph::GraphEngine::NodeId id)
+    {
+        openPluginSettings(id);
+    });
 
     leftPanel.addAndMakeVisible(pluginBrowser);
     rightPanel.addAndMakeVisible(graphView);
@@ -459,6 +464,33 @@ void MainWindow::showHelpDialog()
     juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
                                            host::i18n::tr("help.title"),
                                            host::i18n::tr("help.content"));
+}
+
+void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
+{
+    if (id.isNull() || ! graphEngine)
+        return;
+
+    auto* node = graphEngine->getNode(id);
+    if (dynamic_cast<host::graph::nodes::VstFxNode*>(node) == nullptr)
+        return;
+
+    auto settingsComponent = std::make_unique<host::gui::PluginSettingsComponent>(graphEngine,
+                                                                                  id,
+                                                                                  [this]()
+                                                                                  {
+                                                                                      graphView.refreshGraph(true);
+                                                                                  });
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(settingsComponent.release());
+    options.dialogTitle = host::i18n::tr("plugin.settings.title");
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+    options.escapeKeyTriggersCloseButton = true;
+    options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
+    options.runModal();
 }
 
 void MainWindow::changeListenerCallback(juce::ChangeBroadcaster* source)

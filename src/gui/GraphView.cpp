@@ -232,6 +232,12 @@ public:
         }
     }
 
+    void mouseDoubleClick(const juce::MouseEvent& event) override
+    {
+        if (event.mods.isLeftButtonDown())
+            owner.openNodeSettings(nodeId);
+    }
+
 private:
     void drawConnector(juce::Graphics& g, juce::Point<float> centre, bool enabled) const
     {
@@ -272,6 +278,11 @@ GraphView::GraphView()
 }
 
 GraphView::~GraphView() = default;
+
+void GraphView::setOnRequestNodeSettings(std::function<void(NodeId)> callback)
+{
+    onRequestNodeSettings = std::move(callback);
+}
 
 void GraphView::setGraph(std::shared_ptr<host::graph::GraphEngine> graphEngine)
 {
@@ -552,6 +563,12 @@ bool GraphView::keyPressed(const juce::KeyPress& key)
     const auto code = key.getKeyCode();
     const auto mods = key.getModifiers();
 
+    if (code == juce::KeyPress::returnKey && ! mods.isAnyModifierKeyDown())
+    {
+        if (! selectedNode.isNull() && openNodeSettings(selectedNode))
+            return true;
+    }
+
     if (code == juce::KeyPress::deleteKey || code == juce::KeyPress::backspaceKey)
     {
         deleteSelectedNode();
@@ -702,15 +719,23 @@ void GraphView::showNodeContextMenu(NodeId id, juce::Point<int> screenPosition)
         return;
 
     const auto* component = findNodeComponent(id);
+    const bool supportsSettings = nodeSupportsSettings(id);
 
     juce::PopupMenu menu;
     enum NodeMenuAction
     {
-        clearOutgoingId = 1,
-        clearIncomingId = 2,
-        resetPositionId = 3,
-        deleteNodeId = 4
+        openSettingsId = 1,
+        clearOutgoingId,
+        clearIncomingId,
+        resetPositionId,
+        deleteNodeId
     };
+
+    if (supportsSettings)
+    {
+        menu.addItem(openSettingsId, tr("graph.context.openPluginSettings"));
+        menu.addSeparator();
+    }
 
     menu.addItem(clearOutgoingId, tr("graph.context.clearOutgoing"));
     menu.addItem(clearIncomingId, tr("graph.context.clearIncoming"));
@@ -727,6 +752,11 @@ void GraphView::showNodeContextMenu(NodeId id, juce::Point<int> screenPosition)
                        {
                            switch (result)
                            {
+                               case openSettingsId:
+                               {
+                                   openNodeSettings(id);
+                                   break;
+                               }
                                case clearOutgoingId: clearConnectionsFrom(id); break;
                                case clearIncomingId: clearConnectionsTo(id); break;
                                case resetPositionId:
@@ -934,6 +964,31 @@ void GraphView::deleteSelectedNode()
     }
 
     refreshGraph(true);
+}
+
+bool GraphView::nodeSupportsSettings(NodeId id) const
+{
+    if (id.isNull() || ! graph)
+        return false;
+
+    if (auto* node = graph->getNode(id))
+        return dynamic_cast<host::graph::nodes::VstFxNode*>(node) != nullptr;
+
+    return false;
+}
+
+bool GraphView::openNodeSettings(NodeId id)
+{
+    if (! nodeSupportsSettings(id))
+        return false;
+
+    if (onRequestNodeSettings)
+    {
+        onRequestNodeSettings(id);
+        return true;
+    }
+
+    return false;
 }
 
 void GraphView::nudgeSelectedNode(juce::Point<float> delta)

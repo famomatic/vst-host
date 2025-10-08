@@ -2,6 +2,7 @@
 
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -22,6 +23,7 @@ namespace host::gui
         void refreshGraph(bool preservePositions = true);
         void focusOnNode(NodeId id);
         void deselectAll();
+        void setOnRequestNodeSettings(std::function<void(NodeId)> callback);
 
         void paint(juce::Graphics& g) override;
         void resized() override;
@@ -54,6 +56,8 @@ namespace host::gui
         void setViewOffset(juce::Point<float> newOffset);
         void panBy(juce::Point<float> delta);
         [[nodiscard]] juce::Rectangle<float> computeContentBounds() const;
+        [[nodiscard]] bool nodeSupportsSettings(NodeId id) const;
+        [[nodiscard]] bool openNodeSettings(NodeId id);
 
         [[nodiscard]] NodeComponent* findNodeComponent(NodeId id) const;
 
@@ -61,6 +65,7 @@ namespace host::gui
         std::vector<std::unique_ptr<NodeComponent>> nodeComponents;
         std::unordered_map<std::string, NodeComponent*> nodeLookup;
         std::unordered_map<std::string, juce::Point<float>> nodePositions;
+        std::function<void(NodeId)> onRequestNodeSettings;
 
         NodeId selectedNode {};
         juce::Point<float> viewOffset {};

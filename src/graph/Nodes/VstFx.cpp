@@ -53,7 +53,16 @@ namespace host::graph::nodes
     {
         if (! pluginName_.empty())
             return pluginName_;
+
+        if (pluginInfo_.has_value() && ! pluginInfo_->name.empty())
+            return pluginInfo_->name;
+
         return "VST FX";
+    }
+
+    void VstFxNode::setDisplayName(std::string newName)
+    {
+        pluginName_ = std::move(newName);
     }
 
     void VstFxNode::setPluginInfo(host::plugin::PluginInfo info)

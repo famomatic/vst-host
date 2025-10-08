@@ -2,11 +2,71 @@
 
 #include <thread>
 #include <vector>
+#include <array>
+#include <filesystem>
 
 namespace host::plugin
 {
     namespace
     {
+        juce::File resolveVst3Module(const juce::File& entry)
+        {
+            if (! entry.isDirectory())
+                return entry;
+
+            const auto findModuleInDirectory = [](const juce::File& directory) -> juce::File
+            {
+                if (! directory.isDirectory())
+                    return {};
+
+                juce::DirectoryIterator it(directory,
+                                           true,
+                                           "*",
+                                           juce::File::findFiles);
+                while (it.next())
+                {
+                    auto candidate = it.getFile();
+                    if (candidate.isDirectory())
+                        continue;
+
+                    auto ext = candidate.getFileExtension().toLowerCase();
+                    const bool isBundleBinary = ext.isEmpty()
+                                                && candidate.getParentDirectory().getFileName().equalsIgnoreCase("MacOS");
+
+                    if (ext == ".vst3" || ext == ".dll" || ext == ".so" || ext == ".dylib" || isBundleBinary)
+                        return candidate;
+                }
+
+                return {};
+            };
+
+            const juce::File contents = entry.getChildFile("Contents");
+            const std::array<juce::String, 3> preferredSubdirs { juce::String("x86_64-win"),
+                                                                 juce::String("x86_64-linux"),
+                                                                 juce::String("MacOS") };
+
+            if (contents.isDirectory())
+            {
+                for (const auto& name : preferredSubdirs)
+                {
+                    const auto preferred = contents.getChildFile(name);
+                    const auto module = findModuleInDirectory(preferred);
+                    if (module.existsAsFile())
+                        return module;
+                }
+
+                const auto module = findModuleInDirectory(contents);
+                if (module.existsAsFile())
+                    return module;
+            }
+
+            const auto module = findModuleInDirectory(entry);
+            if (module.existsAsFile())
+                return module;
+
+            return entry;
+        }
+
         bool hasPluginExtension(const juce::File& file)
         {
             auto ext = file.getFileExtension().toLowerCase();
@@ -169,21 +229,90 @@ namespace host::plugin
 
         for (auto& path : pathsCopy)
         {
-            juce::DirectoryIterator it(path, true, "*", juce::File::findFiles);
-            while (it.next())
+            std::vector<juce::File> pending;
+            pending.push_back(path);
+
+            while (! pending.empty())
             {
-                auto file = it.getFile();
-                if (! hasPluginExtension(file))
+                auto current = pending.back();
+                pending.pop_back();
+
+                if (! current.exists())
                     continue;
 
-                PluginInfo info;
-                info.path = file.getFullPathName().toStdString();
-                info.name = file.getFileNameWithoutExtension().toStdString();
-                info.id = juce::Uuid().toString().toStdString();
-                info.format = file.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
-                info.ins = 2;
-                info.outs = 2;
-                results.push_back(std::move(info));
+                if (! current.isDirectory())
+                {
+                    if (! hasPluginExtension(current))
+                        continue;
+
+                    juce::File modulePath = current.hasFileExtension(".vst3") ? resolveVst3Module(current) : current;
+
+                    PluginInfo info;
+                    info.path = modulePath.existsAsFile()
+                                    ? std::filesystem::path(modulePath.getFullPathName().toStdString())
+                                    : std::filesystem::path(current.getFullPathName().toStdString());
+                    info.name = current.getFileNameWithoutExtension().toStdString();
+                    info.id = modulePath.existsAsFile()
+                                  ? modulePath.getFullPathName().toStdString()
+                                  : current.getFullPathName().toStdString();
+                    info.format = current.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
+                    info.ins = 2;
+                    info.outs = 2;
+                    results.push_back(std::move(info));
+                    continue;
+                }
+
+                juce::DirectoryIterator it(current,
+                                           false,
+                                           "*",
+                                           juce::File::findFilesAndDirectories);
+                while (it.next())
+                {
+                    auto candidate = it.getFile();
+                    if (candidate.isDirectory())
+                    {
+                        if (hasPluginExtension(candidate))
+                        {
+                            juce::File modulePath = resolveVst3Module(candidate);
+
+                            PluginInfo info;
+                            info.path = modulePath.existsAsFile()
+                                            ? std::filesystem::path(modulePath.getFullPathName().toStdString())
+                                            : std::filesystem::path(candidate.getFullPathName().toStdString());
+                            info.name = candidate.getFileNameWithoutExtension().toStdString();
+                            info.id = modulePath.existsAsFile()
+                                          ? modulePath.getFullPathName().toStdString()
+                                          : candidate.getFullPathName().toStdString();
+                            info.format = PluginFormat::VST3;
+                            info.ins = 2;
+                            info.outs = 2;
+                            results.push_back(std::move(info));
+                        }
+                        else
+                        {
+                            pending.push_back(candidate);
+                        }
+                        continue;
+                    }
+
+                    if (! hasPluginExtension(candidate))
+                        continue;
+
+                    juce::File modulePath = candidate.hasFileExtension(".vst3") ? resolveVst3Module(candidate) : candidate;
+
+                    PluginInfo info;
+                    info.path = modulePath.existsAsFile()
+                                    ? std::filesystem::path(modulePath.getFullPathName().toStdString())
+                                    : std::filesystem::path(candidate.getFullPathName().toStdString());
+                    info.name = candidate.getFileNameWithoutExtension().toStdString();
+                    info.id = modulePath.existsAsFile()
+                                  ? modulePath.getFullPathName().toStdString()
+                                  : candidate.getFullPathName().toStdString();
+                    info.format = candidate.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
+                    info.ins = 2;
+                    info.outs = 2;
+                    results.push_back(std::move(info));
+                }
             }
         }
 

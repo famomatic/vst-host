@@ -38,6 +38,7 @@ namespace
         strings.set("graph.menu.focus", "Focus Selected Node");
         strings.set("graph.menu.resetView", "Reset View");
         strings.set("graph.menu.clearSelection", "Clear Selection");
+        strings.set("graph.context.openPluginSettings", "Open plugin settings");
         strings.set("graph.context.clearOutgoing", "Clear outgoing connections");
         strings.set("graph.context.clearIncoming", "Clear incoming connections");
         strings.set("graph.context.resetPosition", "Reset position");
@@ -91,10 +92,28 @@ namespace
         strings.set("error.loadProject.title", "Load Failed");
         strings.set("error.loadProject.message", "Unable to load the selected project file.");
 
+        strings.set("plugin.settings.title", "Plugin Settings");
+        strings.set("plugin.settings.name", "Display name");
+        strings.set("plugin.settings.status", "Status");
+        strings.set("plugin.settings.status.loaded", "Loaded");
+        strings.set("plugin.settings.status.missing", "Not loaded");
+        strings.set("plugin.settings.format", "Format");
+        strings.set("plugin.settings.path", "Plugin path");
+        strings.set("plugin.settings.inputs", "Input channels");
+        strings.set("plugin.settings.outputs", "Output channels");
+        strings.set("plugin.settings.latency", "Reported latency");
+        strings.set("plugin.settings.bypass", "Bypass processing");
+        strings.set("plugin.settings.notAvailable", "Not available");
+        strings.set("plugin.settings.unavailable", "Plugin unavailable");
+        strings.set("plugin.settings.samplesLabel", "samples");
+        strings.set("plugin.format.vst2", "VST2");
+        strings.set("plugin.format.vst3", "VST3");
+
         strings.set("help.title", "Help");
         strings.set("help.content",
                     "• Use the plugin browser to double-click a plugin to add it.\n"
                     "• Drag nodes to arrange them and use Delete to remove selected plugins.\n"
+                    "• Right-click a plugin node or press Enter to open its settings.\n"
                     "• Close the window to minimise to the tray; right-click the tray icon for settings or exit.");
 
         strings.set("preferences.language.english", "English");
@@ -133,6 +152,7 @@ namespace
         strings.set("graph.menu.focus", juce::String::fromUTF8("선택 노드로 이동"));
         strings.set("graph.menu.resetView", juce::String::fromUTF8("보기 초기화"));
         strings.set("graph.menu.clearSelection", juce::String::fromUTF8("선택 해제"));
+        strings.set("graph.context.openPluginSettings", juce::String::fromUTF8("플러그인 설정 열기"));
         strings.set("graph.context.clearOutgoing", juce::String::fromUTF8("출력 연결 지우기"));
         strings.set("graph.context.clearIncoming", juce::String::fromUTF8("입력 연결 지우기"));
         strings.set("graph.context.resetPosition", juce::String::fromUTF8("위치 초기화"));
@@ -186,10 +206,28 @@ namespace
         strings.set("error.loadProject.title", juce::String::fromUTF8("로드 실패"));
         strings.set("error.loadProject.message", juce::String::fromUTF8("선택한 프로젝트 파일을 불러올 수 없습니다."));
 
+        strings.set("plugin.settings.title", juce::String::fromUTF8("플러그인 설정"));
+        strings.set("plugin.settings.name", juce::String::fromUTF8("표시 이름"));
+        strings.set("plugin.settings.status", juce::String::fromUTF8("상태"));
+        strings.set("plugin.settings.status.loaded", juce::String::fromUTF8("로드됨"));
+        strings.set("plugin.settings.status.missing", juce::String::fromUTF8("로드되지 않음"));
+        strings.set("plugin.settings.format", juce::String::fromUTF8("형식"));
+        strings.set("plugin.settings.path", juce::String::fromUTF8("플러그인 경로"));
+        strings.set("plugin.settings.inputs", juce::String::fromUTF8("입력 채널"));
+        strings.set("plugin.settings.outputs", juce::String::fromUTF8("출력 채널"));
+        strings.set("plugin.settings.latency", juce::String::fromUTF8("보고된 레이턴시"));
+        strings.set("plugin.settings.bypass", juce::String::fromUTF8("이 플러그인 우회"));
+        strings.set("plugin.settings.notAvailable", juce::String::fromUTF8("정보 없음"));
+        strings.set("plugin.settings.unavailable", juce::String::fromUTF8("플러그인을 사용할 수 없습니다"));
+        strings.set("plugin.settings.samplesLabel", juce::String::fromUTF8("샘플"));
+        strings.set("plugin.format.vst2", juce::String::fromUTF8("VST2"));
+        strings.set("plugin.format.vst3", juce::String::fromUTF8("VST3"));
+
         strings.set("help.title", juce::String::fromUTF8("도움말"));
         strings.set("help.content",
                     juce::String::fromUTF8("• 플러그인 브라우저에서 플러그인을 더블 클릭하면 그래프에 추가됩니다.\n"
                                             "• 노드를 드래그하여 배치하고 Delete 키로 선택한 플러그인을 삭제할 수 있습니다.\n"
+                                            "• 플러그인 노드를 우클릭하거나 Enter 키를 눌러 설정 창을 열 수 있습니다.\n"
                                             "• 창을 닫으면 프로그램이 트레이로 이동하며, 트레이 아이콘을 우클릭하면 설정과 종료를 선택할 수 있습니다."));
 
         strings.set("preferences.language.english", juce::String::fromUTF8("영어"));
