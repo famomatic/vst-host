@@ -1176,6 +1176,8 @@ namespace
         }
     }
 
+    class Vst2EditorComponent;
+
     class Vst2PluginInstance final : public PluginInstance
     {
     public:
@@ -1183,6 +1185,8 @@ namespace
             : module(std::move(moduleIn))
             , effect(effectIn)
         {
+            if (effect != nullptr)
+                effect->host_internal = this;
         }
 
         ~Vst2PluginInstance() override { shutdown(); }
@@ -1332,24 +1336,23 @@ namespace
             return result == 1;
         }
 
-        [[nodiscard]] bool hasEditor() const override { return false; }
-        std::unique_ptr<juce::Component> createEditorComponent() override { return {}; }
+        [[nodiscard]] bool hasEditor() const override { return supportsEditor(); }
+        std::unique_ptr<juce::Component> createEditorComponent() override;
+
+        double currentSampleRate() const noexcept { return sampleRate > 0.0 ? sampleRate : 44100.0; }
+        int currentBlockSize() const noexcept { return blockSize > 0 ? blockSize : 512; }
+
+        bool openEditor(void* parentHandle);
+        void closeEditor();
+        void idleEditor();
+        bool getEditorBounds(juce::Rectangle<int>& bounds) const;
+        void registerEditor(Vst2EditorComponent* editor);
+        void unregisterEditor(Vst2EditorComponent* editor);
+        bool handleEditorResizeRequest(int width, int height);
 
     private:
-        void shutdown()
-        {
-            if (! effect)
-                return;
-
-            if (active)
-            {
-                effect->control(effect, VST_EFFECT_OPCODE_SUSPEND_RESUME, 0, 0, nullptr, 0.0f);
-                active = false;
-            }
-
-            effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0f);
-            effect = nullptr;
-        }
+        bool supportsEditor() const;
+        void shutdown();
 
         SharedLibrary module;
         vst_effect_t* effect { nullptr };
@@ -1362,15 +1365,260 @@ namespace
         std::vector<float> scratch;
         std::vector<double> doubleInputScratch;
         std::vector<double> doubleOutputScratch;
+        std::atomic<bool> editorOpen { false };
+        std::atomic<Vst2EditorComponent*> activeEditor { nullptr };
     };
+
+    class Vst2EditorComponent final : public juce::Component,
+                                      private juce::Timer
+    {
+    public:
+        explicit Vst2EditorComponent(Vst2PluginInstance& ownerIn)
+            : owner(ownerIn)
+        {
+            setOpaque(false);
+            juce::Rectangle<int> bounds;
+            if (owner.getEditorBounds(bounds))
+                setSize(bounds.getWidth(), bounds.getHeight());
+        }
+
+        ~Vst2EditorComponent() override
+        {
+            detachEditor();
+        }
+
+        void parentHierarchyChanged() override
+        {
+            juce::Component::parentHierarchyChanged();
+            attachIfNeeded();
+        }
+
+        void visibilityChanged() override
+        {
+            juce::Component::visibilityChanged();
+            if (isShowing())
+                attachIfNeeded();
+            else
+                detachEditor();
+        }
+
+        void focusGained(juce::Component::FocusChangeType cause) override
+        {
+            juce::Component::focusGained(cause);
+        }
+
+        void focusLost(juce::Component::FocusChangeType cause) override
+        {
+            juce::Component::focusLost(cause);
+        }
+
+        void resized() override
+        {
+            juce::Component::resized();
+        }
+
+        void applyPluginRequestedSize(int width, int height)
+        {
+            if (width > 0 && height > 0)
+                setSize(width, height);
+        }
+
+    private:
+        void attachIfNeeded()
+        {
+            if (attached || ! isShowing())
+                return;
+
+            if (auto* peer = getPeer())
+            {
+                if (owner.openEditor(peer->getNativeHandle()))
+                {
+                    owner.registerEditor(this);
+                    attached = true;
+                    syncBoundsFromPlugin();
+                    startTimerHz(30);
+                }
+            }
+        }
+
+        void detachEditor()
+        {
+            if (! attached)
+                return;
+
+            stopTimer();
+            owner.unregisterEditor(this);
+            owner.closeEditor();
+            attached = false;
+        }
+
+        void syncBoundsFromPlugin()
+        {
+            juce::Rectangle<int> bounds;
+            if (owner.getEditorBounds(bounds) && bounds.getWidth() > 0 && bounds.getHeight() > 0)
+                setSize(bounds.getWidth(), bounds.getHeight());
+        }
+
+        void timerCallback() override
+        {
+            owner.idleEditor();
+        }
+
+        Vst2PluginInstance& owner;
+        bool attached { false };
+    };
+
+    bool Vst2PluginInstance::supportsEditor() const
+    {
+        return effect != nullptr && (effect->flags & VST_EFFECT_FLAG_EDITOR) != 0;
+    }
+
+    std::unique_ptr<juce::Component> Vst2PluginInstance::createEditorComponent()
+    {
+        if (! supportsEditor())
+            return {};
+
+        return std::make_unique<Vst2EditorComponent>(*this);
+    }
+
+    bool Vst2PluginInstance::openEditor(void* parentHandle)
+    {
+        if (! supportsEditor() || ! effect || parentHandle == nullptr)
+            return false;
+
+        if (editorOpen.load())
+            return true;
+
+        const auto result = effect->control(effect, VST_EFFECT_OPCODE_EDITOR_OPEN, 0, 0, parentHandle, 0.0f);
+        if (result == 0)
+            return false;
+
+        editorOpen.store(true);
+        return true;
+    }
+
+    void Vst2PluginInstance::closeEditor()
+    {
+        if (! effect)
+            return;
+
+        if (editorOpen.exchange(false))
+            effect->control(effect, VST_EFFECT_OPCODE_EDITOR_CLOSE, 0, 0, nullptr, 0.0f);
+    }
+
+    void Vst2PluginInstance::idleEditor()
+    {
+        if (effect)
+            effect->control(effect, VST_EFFECT_OPCODE_IDLE, 0, 0, nullptr, 0.0f);
+    }
+
+    bool Vst2PluginInstance::getEditorBounds(juce::Rectangle<int>& bounds) const
+    {
+        if (! supportsEditor())
+            return false;
+
+        vst_rect_t rect {};
+        const auto result = effect->control(effect, VST_EFFECT_OPCODE_EDITOR_RECT, 0, 0, &rect, 0.0f);
+        if (result == 0)
+            return false;
+
+        const int width = static_cast<int>(rect.right - rect.left);
+        const int height = static_cast<int>(rect.bottom - rect.top);
+        if (width <= 0 || height <= 0)
+            return false;
+
+        bounds.setBounds(0, 0, width, height);
+        return true;
+    }
+
+    void Vst2PluginInstance::registerEditor(Vst2EditorComponent* editor)
+    {
+        activeEditor.store(editor);
+    }
+
+    void Vst2PluginInstance::unregisterEditor(Vst2EditorComponent* editor)
+    {
+        auto* current = activeEditor.load();
+        if (current == editor)
+            activeEditor.store(nullptr);
+    }
+
+    bool Vst2PluginInstance::handleEditorResizeRequest(int width, int height)
+    {
+        if (width <= 0 || height <= 0)
+            return false;
+
+        auto* editor = activeEditor.load();
+        if (editor == nullptr)
+            return false;
+
+        juce::Component::SafePointer<Vst2EditorComponent> safe(editor);
+        juce::MessageManager::callAsync([safe, width, height]
+        {
+            if (safe != nullptr)
+                safe->applyPluginRequestedSize(width, height);
+        });
+        return true;
+    }
+
+    void Vst2PluginInstance::shutdown()
+    {
+        if (! effect)
+            return;
+
+        closeEditor();
+        activeEditor.store(nullptr);
+
+        if (active)
+        {
+            effect->control(effect, VST_EFFECT_OPCODE_SUSPEND_RESUME, 0, 0, nullptr, 0.0f);
+            active = false;
+        }
+
+        effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0f);
+        effect->host_internal = nullptr;
+        effect = nullptr;
+    }
 
     constexpr int32_t kVstMagic = VST_FOURCC('V', 's', 't', 'P');
     constexpr int32_t kVstVersion2400 = 2400;
 
-    intptr_t VST_FUNCTION_INTERFACE hostCallback(vst_effect_t*, int32_t opcode, int32_t, std::int64_t, const char*, float)
+    intptr_t VST_FUNCTION_INTERFACE hostCallback(vst_effect_t* effect,
+                                                 int32_t opcode,
+                                                 int32_t index,
+                                                 std::int64_t value,
+                                                 const char* ptr,
+                                                 float)
     {
-        if (opcode == VST_HOST_OPCODE_VST_VERSION)
+        auto* instance = (effect != nullptr)
+                             ? static_cast<Vst2PluginInstance*>(effect->host_internal)
+                             : nullptr;
+
+        switch (opcode)
+        {
+        case VST_HOST_OPCODE_VST_VERSION:
             return kVstVersion2400;
+        case VST_HOST_OPCODE_SUPPORTS:
+            if (ptr == nullptr)
+                return VST_STATUS_FALSE;
+            if (std::strcmp(ptr, vst_host_supports.sizeWindow) == 0)
+                return VST_STATUS_TRUE;
+            return VST_STATUS_FALSE;
+        case VST_HOST_OPCODE_EDITOR_RESIZE:
+            if (instance != nullptr)
+            {
+                const bool accepted = instance->handleEditorResizeRequest(index, static_cast<int>(value));
+                return accepted ? VST_STATUS_TRUE : VST_STATUS_FALSE;
+            }
+            return VST_STATUS_FALSE;
+        case VST_HOST_OPCODE_GET_SAMPLE_RATE:
+            return static_cast<intptr_t>(instance != nullptr ? instance->currentSampleRate() : 44100.0);
+        case VST_HOST_OPCODE_GET_BLOCK_SIZE:
+            return static_cast<intptr_t>(instance != nullptr ? instance->currentBlockSize() : 512);
+        default:
+            break;
+        }
+
         return 0;
     }
 }
@@ -1439,6 +1687,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     };
     bool controllerInitialized = false;
 
+    bool componentInitialised = false;
     const auto count = factory->countClasses();
     for (Steinberg::int32 i = 0; i < count; ++i)
     {
@@ -1452,21 +1701,76 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         if (hasRequestedId && !(currentId == requestedClassId))
             continue;
 
-        if (factory->createInstance(classInfo.cid, Steinberg::Vst::IComponent::iid, reinterpret_cast<void**>(&component)) != Steinberg::kResultOk || ! component)
-            continue;
+        controller = nullptr;
+        component = nullptr;
+        processor = nullptr;
 
-        if (component->queryInterface(Steinberg::Vst::IAudioProcessor::iid, reinterpret_cast<void**>(&processor)) != Steinberg::kResultOk || ! processor)
+        auto instantiateWithContext = [&](bool provideHostApplication) -> bool
         {
-            component->release();
-            component = nullptr;
-            continue;
+            Steinberg::Vst::IComponent* newComponent = nullptr;
+            if (factory->createInstance(classInfo.cid,
+                                        Steinberg::Vst::IComponent::iid,
+                                        reinterpret_cast<void**>(&newComponent)) != Steinberg::kResultOk
+                || newComponent == nullptr)
+                return false;
+
+            Steinberg::Vst::IAudioProcessor* newProcessor = nullptr;
+            if (newComponent->queryInterface(Steinberg::Vst::IAudioProcessor::iid,
+                                             reinterpret_cast<void**>(&newProcessor)) != Steinberg::kResultOk
+                || newProcessor == nullptr)
+            {
+                newComponent->release();
+                return false;
+            }
+
+            Steinberg::tresult initResult = newComponent->initialize(provideHostApplication && hostContext
+                                                                      ? hostContext.get()
+                                                                      : nullptr);
+            if (initResult != Steinberg::kResultOk)
+            {
+                newProcessor->release();
+                newComponent->release();
+                return false;
+            }
+
+            component = newComponent;
+            processor = newProcessor;
+            return true;
+        };
+
+        if (! instantiateWithContext(true))
+        {
+            if (! instantiateWithContext(false))
+                continue;
+
+            hostContext = nullptr;
         }
 
-        factory->createInstance(classInfo.cid, Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controller));
+        Steinberg::TUID controllerClassId {};
+        if (component->getControllerClassId(controllerClassId) == Steinberg::kResultOk)
+        {
+            if (factory->createInstance(controllerClassId,
+                                        Steinberg::Vst::IEditController::iid,
+                                        reinterpret_cast<void**>(&controller)) != Steinberg::kResultOk)
+            {
+                controller = nullptr;
+            }
+        }
+
+        if (! controller)
+        {
+            if (component->queryInterface(Steinberg::Vst::IEditController::iid, reinterpret_cast<void**>(&controller)) != Steinberg::kResultOk)
+                controller = nullptr;
+        }
+
+        componentInitialised = true;
         break;
     }
 
     factory->release();
+
+    if (! componentInitialised || ! component || ! processor)
+        return nullptr;
 
     if (! controller && component)
     {
@@ -1474,21 +1778,10 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
             controller = nullptr;
     }
 
-    if (! component || ! processor)
-        return nullptr;
-
-    if (component->initialize(hostContext.get()) != Steinberg::kResultOk)
-    {
-        processor->release();
-        component->release();
-        releaseController(false);
-        return nullptr;
-    }
-
     if (controller)
     {
         controller->setComponentHandler(componentHandler);
-        if (controller->initialize(hostContext.get()) != Steinberg::kResultOk)
+        if (controller->initialize(hostContext ? hostContext.get() : nullptr) != Steinberg::kResultOk)
         {
             releaseController(false);
         }
