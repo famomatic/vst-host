@@ -18,7 +18,7 @@ namespace host::plugin
 
     void PluginScanner::addSearchPath(const juce::File& path)
     {
-        if (! path.exists())
+        if (path.getFullPathName().isEmpty())
             return;
 
         const juce::ScopedLock lock(stateLock);
@@ -30,6 +30,20 @@ namespace host::plugin
     {
         const juce::ScopedLock lock(stateLock);
         searchPaths.removeFirstMatchingValue(path);
+    }
+
+    void PluginScanner::setSearchPaths(const std::vector<juce::File>& paths)
+    {
+        const juce::ScopedLock lock(stateLock);
+        searchPaths.clearQuick();
+        for (const auto& path : paths)
+        {
+            if (path.getFullPathName().isEmpty())
+                continue;
+
+            if (! searchPaths.contains(path))
+                searchPaths.add(path);
+        }
     }
 
     void PluginScanner::scanAsync()
@@ -103,11 +117,15 @@ namespace host::plugin
             discovered = std::move(loaded);
         }
 
+        sendChangeMessage();
         return true;
     }
 
     bool PluginScanner::saveCache(const juce::File& cacheFile) const
     {
+        if (! cacheFile.getParentDirectory().isDirectory())
+            cacheFile.getParentDirectory().createDirectory();
+
         juce::DynamicObject::Ptr root(new juce::DynamicObject());
         root->setProperty("v", 1);
         root->setProperty("scannedAt", juce::Time::getCurrentTime().toISO8601(true));
@@ -174,7 +192,7 @@ namespace host::plugin
             discovered = std::move(results);
         }
 
-        if (cacheLocation.existsAsFile())
+        if (cacheLocation.getFullPathName().isNotEmpty())
             saveCache(cacheLocation);
     }
 }

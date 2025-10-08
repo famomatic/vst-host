@@ -22,11 +22,20 @@ namespace host::persist
         void setPluginDirectories(const std::vector<juce::File>& dirs);
         const std::vector<juce::File>& getPluginDirectories() const noexcept { return pluginDirectories; }
 
+        void setDefaultPreset(const juce::File& presetFile) { defaultPreset = presetFile; }
+        juce::File getDefaultPreset() const noexcept { return defaultPreset; }
+        void clearDefaultPreset() { defaultPreset = juce::File(); }
+
+        void setLanguage(const juce::String& languageCode) { language = languageCode; }
+        juce::String getLanguage() const noexcept { return language; }
+
         bool load(const juce::File& file);
         bool save(const juce::File& file) const;
 
     private:
         EngineSettings engineSettings;
         std::vector<juce::File> pluginDirectories;
+        juce::File defaultPreset;
+        juce::String language { "en" };
     };
 }

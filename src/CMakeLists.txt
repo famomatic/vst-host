@@ -21,6 +21,7 @@ set(SOURCES
     ${SRC_DIR}/gui/GraphView.cpp
     ${SRC_DIR}/gui/Preferences.cpp
     ${SRC_DIR}/gui/PluginBrowser.cpp
+    ${SRC_DIR}/util/Localization.cpp
     ${SRC_DIR}/persist/Config.cpp
     ${SRC_DIR}/persist/Project.cpp
     ${SRC_DIR}/persist/Preset.cpp

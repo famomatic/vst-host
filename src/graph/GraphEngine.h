@@ -33,6 +33,7 @@ public:
     NodeId addNode(std::unique_ptr<Node> node);
     NodeId addNodeWithId(const NodeId& id, std::unique_ptr<Node> node);
     [[nodiscard]] Node* getNode(const NodeId& id) const;
+    void removeNode(NodeId id);
 
     void setIO(NodeId inputNode, NodeId outputNode);
     void connect(NodeId from, NodeId to);

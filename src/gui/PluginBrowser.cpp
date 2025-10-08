@@ -1,14 +1,17 @@
 #include "gui/PluginBrowser.h"
 
+#include "util/Localization.h"
+
 namespace host::gui
 {
+    using host::i18n::tr;
     PluginBrowser::PluginBrowser()
     {
         addAndMakeVisible(searchBox);
         addAndMakeVisible(listBox);
 
         listBox.setModel(this);
-        searchBox.setTextToShowWhenEmpty("Search plugins", juce::Colours::grey);
+        refreshTranslations();
         searchBox.onTextChange = [this]
         {
             filterPlugins();
@@ -49,6 +52,11 @@ namespace host::gui
         auto area = getLocalBounds();
         searchBox.setBounds(area.removeFromTop(28).reduced(4));
         listBox.setBounds(area);
+    }
+
+    void PluginBrowser::refreshTranslations()
+    {
+        searchBox.setTextToShowWhenEmpty(tr("browser.searchPlaceholder"), juce::Colours::grey);
     }
 
     int PluginBrowser::getNumRows()

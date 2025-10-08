@@ -3,18 +3,36 @@
 #include <algorithm>
 #include <cmath>
 
+#include "util/Localization.h"
+
 namespace host::gui
 {
+    using host::i18n::tr;
     PreferencesComponent::PreferencesComponent(host::audio::DeviceEngine& engine,
                                                std::shared_ptr<host::plugin::PluginScanner> scanner,
-                                               juce::AudioDeviceManager& manager)
-        : deviceEngine(engine), pluginScanner(std::move(scanner)), deviceManager(manager)
+                                               juce::AudioDeviceManager& manager,
+                                               host::persist::Config& configIn,
+                                               std::function<void(const host::persist::Config&)> onConfigChangedIn)
+        : deviceEngine(engine),
+          pluginScanner(std::move(scanner)),
+          deviceManager(manager),
+          config(configIn),
+          onConfigChanged(std::move(onConfigChangedIn))
     {
         setSize(720, 540);
         addAndMakeVisible(tabs);
         buildAudioTab();
         buildPluginTab();
+        buildStartupTab();
         pluginPathList.setRowHeight(24);
+        host::i18n::manager().addChangeListener(this);
+        updateDefaultPresetDisplay();
+        applyTranslations();
+    }
+
+    PreferencesComponent::~PreferencesComponent()
+    {
+        host::i18n::manager().removeChangeListener(this);
     }
 
     void PreferencesComponent::paint(juce::Graphics& g)
@@ -27,6 +45,7 @@ namespace host::gui
         tabs.setBounds(getLocalBounds().reduced(10));
         layoutAudioTab();
         layoutPluginTab();
+        layoutStartupTab();
     }
 
     void PreferencesComponent::parentHierarchyChanged()
@@ -48,11 +67,11 @@ namespace host::gui
             label.setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
         };
 
-        configureLabel(driverLabel, "Driver");
-        configureLabel(inputDeviceLabel, "Input Device");
-        configureLabel(outputDeviceLabel, "Output Device");
-        configureLabel(sampleRateLabel, "Sample Rate");
-        configureLabel(blockSizeLabel, "Block Size");
+        configureLabel(driverLabel, tr("preferences.audio.driver"));
+        configureLabel(inputDeviceLabel, tr("preferences.audio.input"));
+        configureLabel(outputDeviceLabel, tr("preferences.audio.output"));
+        configureLabel(sampleRateLabel, tr("preferences.audio.sampleRate"));
+        configureLabel(blockSizeLabel, tr("preferences.audio.blockSize"));
 
         audioTab->addAndMakeVisible(driverLabel);
         audioTab->addAndMakeVisible(driverBox);
@@ -65,7 +84,7 @@ namespace host::gui
         audioTab->addAndMakeVisible(blockSizeLabel);
         audioTab->addAndMakeVisible(engineBlockBox);
 
-        tabs.addTab("Audio", juce::Colours::grey, audioTab, true);
+        tabs.addTab(tr("preferences.tab.audio"), juce::Colours::grey, audioTab, true);
 
         driverBox.onChange = [this]
         {
@@ -124,6 +143,8 @@ namespace host::gui
             cfg.sampleRate = selectedRate;
             deviceEngine.setEngineConfig(cfg);
             refreshEngineOptions();
+            config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
+            notifyConfigChanged();
         };
 
         engineBlockBox.onChange = [this]
@@ -144,6 +165,8 @@ namespace host::gui
             cfg.blockSize = selectedBlock;
             deviceEngine.setEngineConfig(cfg);
             refreshEngineOptions();
+            config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
+            notifyConfigChanged();
         };
 
         refreshDriverList();
@@ -157,26 +180,33 @@ namespace host::gui
         pluginTab->addAndMakeVisible(removePathButton);
         pluginTab->addAndMakeVisible(rescanButton);
 
-        tabs.addTab("Plugins", juce::Colours::grey, pluginTab, true);
+        addPathButton.setButtonText(tr("preferences.plugins.add"));
+        removePathButton.setButtonText(tr("preferences.plugins.remove"));
+        rescanButton.setButtonText(tr("preferences.plugins.rescan"));
+
+        tabs.addTab(tr("preferences.tab.plugins"), juce::Colours::grey, pluginTab, true);
+
+        pluginPaths = config.getPluginDirectories();
 
         if (pluginScanner)
-        {
-            pluginPaths.clear();
-            for (auto& path : pluginScanner->getSearchPaths())
-                pluginPaths.push_back(path);
-        }
+            pluginScanner->setSearchPaths(pluginPaths);
 
         pluginPathList.updateContent();
 
         addPathButton.onClick = [this]
         {
-            juce::FileChooser chooser("Select plugin directory", juce::File::getSpecialLocation(juce::File::userHomeDirectory));
+            juce::FileChooser chooser(tr("fileChooser.pluginDirectory"), juce::File::getSpecialLocation(juce::File::userHomeDirectory));
             if (chooser.browseForDirectory())
             {
                 auto dir = chooser.getResult();
+                if (std::find(pluginPaths.begin(), pluginPaths.end(), dir) != pluginPaths.end())
+                    return;
+
                 pluginPaths.push_back(dir);
                 if (pluginScanner)
-                    pluginScanner->addSearchPath(dir);
+                    pluginScanner->setSearchPaths(pluginPaths);
+                config.setPluginDirectories(pluginPaths);
+                notifyConfigChanged();
                 pluginPathList.updateContent();
                 pluginPathList.repaint();
             }
@@ -190,7 +220,9 @@ namespace host::gui
                 auto file = pluginPaths[static_cast<size_t>(selected)];
                 pluginPaths.erase(pluginPaths.begin() + selected);
                 if (pluginScanner)
-                    pluginScanner->removeSearchPath(file);
+                    pluginScanner->setSearchPaths(pluginPaths);
+                config.setPluginDirectories(pluginPaths);
+                notifyConfigChanged();
                 pluginPathList.updateContent();
                 pluginPathList.repaint();
             }
@@ -201,6 +233,67 @@ namespace host::gui
             if (pluginScanner)
                 pluginScanner->scanAsync();
         };
+    }
+
+    void PreferencesComponent::buildStartupTab()
+    {
+        startupTab = new juce::Component();
+        auto configureLabel = [](juce::Label& label, const juce::String& text)
+        {
+            label.setText(text, juce::dontSendNotification);
+            label.setJustificationType(juce::Justification::centredLeft);
+            label.setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
+        };
+
+        configureLabel(defaultPresetLabel, tr("preferences.startup.defaultPreset"));
+        configureLabel(languageLabel, tr("preferences.startup.language"));
+        defaultPresetValue.setJustificationType(juce::Justification::centredLeft);
+        defaultPresetValue.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+
+        choosePresetButton.onClick = [this]
+        {
+            juce::FileChooser chooser(tr("fileChooser.defaultPreset"), config.getDefaultPreset());
+            if (chooser.browseForFileToOpen())
+            {
+                config.setDefaultPreset(chooser.getResult());
+                updateDefaultPresetDisplay();
+                notifyConfigChanged();
+            }
+        };
+
+        clearPresetButton.onClick = [this]
+        {
+            config.clearDefaultPreset();
+            updateDefaultPresetDisplay();
+            notifyConfigChanged();
+        };
+
+        choosePresetButton.setButtonText(tr("preferences.startup.browse"));
+        clearPresetButton.setButtonText(tr("preferences.startup.clear"));
+
+        languageBox.onChange = [this]
+        {
+            const auto index = languageBox.getSelectedItemIndex();
+            if (index < 0 || index >= languageCodes.size())
+                return;
+
+            const auto code = languageCodes[index];
+            if (host::i18n::manager().setLanguage(code))
+            {
+                config.setLanguage(code);
+                notifyConfigChanged();
+            }
+        };
+
+        startupTab->addAndMakeVisible(defaultPresetLabel);
+        startupTab->addAndMakeVisible(defaultPresetValue);
+        startupTab->addAndMakeVisible(choosePresetButton);
+        startupTab->addAndMakeVisible(clearPresetButton);
+        startupTab->addAndMakeVisible(languageLabel);
+        startupTab->addAndMakeVisible(languageBox);
+
+        tabs.addTab(tr("preferences.tab.startup"), juce::Colours::grey, startupTab, true);
+        refreshLanguageOptions();
     }
 
     void PreferencesComponent::refreshDriverList()
@@ -262,6 +355,24 @@ namespace host::gui
                 break;
             }
         }
+
+        bool updatedSelection = false;
+        if (setup.inputDeviceName.isEmpty() && inputNames.size() > 0)
+        {
+            setup.inputDeviceName = inputNames[0];
+            updatedSelection = true;
+        }
+
+        if (setup.outputDeviceName.isEmpty() && outputNames.size() > 0)
+        {
+            setup.outputDeviceName = outputNames[0];
+            updatedSelection = true;
+        }
+
+        if (updatedSelection)
+            deviceManager.setAudioDeviceSetup(setup, true);
+
+        deviceManager.getAudioDeviceSetup(setup);
 
         constexpr auto noneText = "(None)";
         inputDeviceBox.addItem(noneText, 1);
@@ -396,6 +507,27 @@ namespace host::gui
         pluginPathList.setBounds(area);
     }
 
+    void PreferencesComponent::layoutStartupTab()
+    {
+        if (startupTab == nullptr)
+            return;
+
+        auto area = startupTab->getLocalBounds().reduced(20);
+
+        auto presetRow = area.removeFromTop(36);
+        defaultPresetLabel.setBounds(presetRow.removeFromLeft(150));
+
+        auto presetButtons = presetRow.removeFromRight(220);
+        choosePresetButton.setBounds(presetButtons.removeFromLeft(140).reduced(4));
+        clearPresetButton.setBounds(presetButtons.reduced(4));
+        defaultPresetValue.setBounds(presetRow.reduced(4));
+
+        area.removeFromTop(12);
+        auto languageRow = area.removeFromTop(32);
+        languageLabel.setBounds(languageRow.removeFromLeft(150));
+        languageBox.setBounds(languageRow.reduced(4));
+    }
+
     int PreferencesComponent::getNumRows()
     {
         return static_cast<int>(pluginPaths.size());
@@ -411,5 +543,98 @@ namespace host::gui
         g.fillRect(bounds);
         g.setColour(juce::Colours::white);
         g.drawText(pluginPaths[static_cast<size_t>(row)].getFullPathName(), bounds.reduced(4), juce::Justification::centredLeft);
+    }
+
+    void PreferencesComponent::applyTranslations()
+    {
+        driverLabel.setText(tr("preferences.audio.driver"), juce::dontSendNotification);
+        inputDeviceLabel.setText(tr("preferences.audio.input"), juce::dontSendNotification);
+        outputDeviceLabel.setText(tr("preferences.audio.output"), juce::dontSendNotification);
+        sampleRateLabel.setText(tr("preferences.audio.sampleRate"), juce::dontSendNotification);
+        blockSizeLabel.setText(tr("preferences.audio.blockSize"), juce::dontSendNotification);
+
+        defaultPresetLabel.setText(tr("preferences.startup.defaultPreset"), juce::dontSendNotification);
+        languageLabel.setText(tr("preferences.startup.language"), juce::dontSendNotification);
+
+        addPathButton.setButtonText(tr("preferences.plugins.add"));
+        removePathButton.setButtonText(tr("preferences.plugins.remove"));
+        rescanButton.setButtonText(tr("preferences.plugins.rescan"));
+        choosePresetButton.setButtonText(tr("preferences.startup.browse"));
+        clearPresetButton.setButtonText(tr("preferences.startup.clear"));
+
+        if (tabs.getNumTabs() >= 1)
+            tabs.setTabName(0, tr("preferences.tab.audio"));
+        if (tabs.getNumTabs() >= 2)
+            tabs.setTabName(1, tr("preferences.tab.plugins"));
+        if (tabs.getNumTabs() >= 3)
+            tabs.setTabName(2, tr("preferences.tab.startup"));
+
+        refreshLanguageOptions();
+        updateDefaultPresetDisplay();
+    }
+
+    void PreferencesComponent::refreshLanguageOptions()
+    {
+        const auto currentLanguage = host::i18n::manager().getLanguage();
+        languageCodes.clear();
+        languageBox.clear(juce::dontSendNotification);
+
+        auto languages = host::i18n::manager().getAvailableLanguages();
+        int itemId = 1;
+        int selectedId = 0;
+
+        for (const auto& entry : languages)
+        {
+            juce::String displayName = entry.second;
+            if (entry.first.equalsIgnoreCase("en"))
+                displayName = tr("preferences.language.english");
+            else if (entry.first.equalsIgnoreCase("ko"))
+                displayName = tr("preferences.language.korean");
+
+            languageBox.addItem(displayName, itemId);
+            languageCodes.add(entry.first);
+            if (entry.first.equalsIgnoreCase(currentLanguage))
+                selectedId = itemId;
+            ++itemId;
+        }
+
+        if (selectedId == 0 && languageBox.getNumItems() > 0)
+            selectedId = 1;
+
+        if (selectedId != 0)
+            languageBox.setSelectedId(selectedId, juce::dontSendNotification);
+    }
+
+    void PreferencesComponent::changeListenerCallback(juce::ChangeBroadcaster* source)
+    {
+        if (source == &host::i18n::manager())
+            applyTranslations();
+    }
+
+    void PreferencesComponent::updateDefaultPresetDisplay()
+    {
+        const auto preset = config.getDefaultPreset();
+        if (preset.getFullPathName().isEmpty())
+        {
+            defaultPresetValue.setText(tr("preferences.startup.noPreset"), juce::dontSendNotification);
+            defaultPresetValue.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+            return;
+        }
+
+        const bool exists = preset.existsAsFile();
+        juce::String display = exists
+                                    ? preset.getFullPathName()
+                                    : tr("preferences.startup.missingPreset").replace("%1", preset.getFullPathName());
+
+        defaultPresetValue.setText(display, juce::dontSendNotification);
+        defaultPresetValue.setColour(juce::Label::textColourId, exists ? juce::Colours::whitesmoke : juce::Colours::orange);
+    }
+
+    void PreferencesComponent::notifyConfigChanged()
+    {
+        const auto cfg = deviceEngine.getEngineConfig();
+        config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
+        if (onConfigChanged)
+            onConfigChanged(config);
     }
 }

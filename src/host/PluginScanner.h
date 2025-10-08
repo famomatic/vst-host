@@ -16,6 +16,7 @@ namespace host::plugin
         void addSearchPath(const juce::File& path);
         void removeSearchPath(const juce::File& path);
         const juce::Array<juce::File>& getSearchPaths() const noexcept { return searchPaths; }
+        void setSearchPaths(const std::vector<juce::File>& paths);
 
         void scanAsync();
         void cancelScan();

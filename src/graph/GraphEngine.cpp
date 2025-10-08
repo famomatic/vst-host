@@ -89,6 +89,43 @@ Node* GraphEngine::getNode(const NodeId& id) const
     return getNodeUnlocked(id);
 }
 
+void GraphEngine::removeNode(NodeId id)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    if (! hasNodeUnlocked(id))
+        return;
+
+    const auto key = toKey(id);
+    const auto indexIt = indexById_.find(key);
+    if (indexIt == indexById_.end())
+        return;
+
+    const auto index = indexIt->second;
+    if (index >= nodes_.size())
+        return;
+
+    for (auto& entry : nodes_)
+    {
+        auto& outputs = entry.outputs;
+        outputs.erase(std::remove(outputs.begin(), outputs.end(), id), outputs.end());
+    }
+
+    nodes_.erase(nodes_.begin() + static_cast<std::ptrdiff_t>(index));
+    indexById_.erase(indexIt);
+
+    indexById_.clear();
+    for (size_t i = 0; i < nodes_.size(); ++i)
+        indexById_[toKey(nodes_[i].id)] = i;
+
+    if (inputNode_ == id)
+        inputNode_ = {};
+    if (outputNode_ == id)
+        outputNode_ = {};
+
+    prepared_ = false;
+}
+
 void GraphEngine::setIO(NodeId inputNode, NodeId outputNode)
 {
     std::lock_guard<std::mutex> lock(mutex_);

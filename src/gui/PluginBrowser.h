@@ -20,6 +20,7 @@ namespace host::gui
 
         void setScanner(std::shared_ptr<host::plugin::PluginScanner> scanner);
         void setOnPluginChosen(std::function<void(const host::plugin::PluginInfo&)> callback);
+        void refreshTranslations();
 
         void paint(juce::Graphics& g) override;
         void resized() override;

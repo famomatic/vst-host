@@ -18,6 +18,7 @@
 #include "graph/Nodes/Split.h"
 #include "graph/Nodes/VstFx.h"
 #include "persist/Project.h"
+#include "util/Localization.h"
 
 namespace
 {
@@ -25,14 +26,95 @@ namespace
     {
         menuOpen = 1,
         menuSave,
+        menuNewEmpty,
         menuPreferences,
         menuDeviceSelector,
-        menuRescan
+        menuRescan,
+        menuExit,
+        menuHelpShow
     };
 }
 
+class MainWindow::TrayIcon : public juce::SystemTrayIconComponent
+{
+public:
+    explicit TrayIcon(MainWindow& ownerIn) : owner(ownerIn)
+    {
+        auto colourImage = createIconImage();
+        juce::Image templateImage;
+        setIconImage(colourImage, templateImage);
+        setIconTooltip(host::i18n::tr("app.title"));
+    }
+
+    void mouseDown(const juce::MouseEvent& event) override
+    {
+        if (event.mods.isPopupMenu())
+        {
+            showMenu();
+        }
+        else if (event.mods.isLeftButtonDown())
+        {
+            owner.toggleVisibilityFromTray();
+        }
+    }
+
+    void mouseUp(const juce::MouseEvent& event) override
+    {
+        if (event.mods.isPopupMenu())
+            showMenu();
+    }
+
+private:
+    static juce::Image createIconImage()
+    {
+        constexpr int size = 64;
+        juce::Image image(juce::Image::ARGB, size, size, true);
+        juce::Graphics g(image);
+        auto bounds = image.getBounds().toFloat().reduced(4.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.4f));
+        g.fillEllipse(bounds);
+        g.setColour(juce::Colours::darkorange);
+        g.fillEllipse(bounds.reduced(6.0f));
+        g.setColour(juce::Colours::white.withAlpha(0.85f));
+        g.setFont(juce::FontOptions().withHeight(28.0f).withStyle("Bold"));
+        g.drawFittedText("V", bounds.toNearestInt(), juce::Justification::centred, 1);
+        return image;
+    }
+
+    void showMenu()
+    {
+        juce::PopupMenu menu;
+        enum TrayCommands
+        {
+            toggleWindow = 1,
+            openSettings = 2,
+            exitApp = 3
+        };
+
+        const bool windowVisible = owner.isVisible() && ! owner.hiddenToTray;
+        menu.addItem(toggleWindow, windowVisible ? host::i18n::tr("tray.hide") : host::i18n::tr("tray.show"));
+        menu.addItem(openSettings, host::i18n::tr("tray.settings"));
+        menu.addSeparator();
+        menu.addItem(exitApp, host::i18n::tr("tray.exit"));
+
+        menu.showMenuAsync(juce::PopupMenu::Options(),
+                           [this](int result)
+                           {
+                               switch (result)
+                               {
+                                   case toggleWindow: owner.toggleVisibilityFromTray(); break;
+                                   case openSettings: owner.showSettingsFromTray(); break;
+                                   case exitApp: owner.exitApplication(); break;
+                                   default: break;
+                               }
+                           });
+    }
+
+    MainWindow& owner;
+};
+
 MainWindow::MainWindow()
-    : juce::DocumentWindow("VST Host Scaffold", juce::Colours::darkgrey, juce::DocumentWindow::allButtons),
+    : juce::DocumentWindow(host::i18n::tr("app.title"), juce::Colours::darkgrey, juce::DocumentWindow::allButtons),
       graphEngine(std::make_shared<host::graph::GraphEngine>()),
       pluginScanner(std::make_shared<host::plugin::PluginScanner>()),
       deviceEngine()
@@ -68,7 +150,15 @@ MainWindow::MainWindow()
 
     setMenuBar(this);
 
-    initialiseGraph();
+    loadConfiguration();
+
+    if (! loadStartupGraph())
+        initialiseGraph();
+
+    trayIcon = std::make_unique<TrayIcon>(*this);
+
+    refreshTranslations();
+    host::i18n::manager().addChangeListener(this);
 
     setCentrePosition(200, 200);
     setSize(1024, 768);
@@ -77,13 +167,22 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+    saveLastSession();
+    saveConfiguration();
+    host::i18n::manager().removeChangeListener(this);
+    if (pluginScanner && pluginCacheFile.getFullPathName().isNotEmpty())
+        pluginScanner->saveCache(pluginCacheFile);
+    trayIcon.reset();
     setMenuBar(nullptr);
     deviceManager.removeAudioCallback(&deviceEngine);
 }
 
 void MainWindow::closeButtonPressed()
 {
-    juce::JUCEApplication::getInstance()->systemRequestedQuit();
+    if (trayIcon != nullptr)
+        minimiseToTray();
+    else
+        juce::JUCEApplication::getInstance()->systemRequestedQuit();
 }
 
 void MainWindow::resized()
@@ -102,7 +201,12 @@ void MainWindow::resized()
 
 juce::StringArray MainWindow::getMenuBarNames()
 {
-    return { "File", "Edit", "View" };
+    juce::StringArray names;
+    names.add(host::i18n::tr("menu.file"));
+    names.add(host::i18n::tr("menu.edit"));
+    names.add(host::i18n::tr("menu.view"));
+    names.add(host::i18n::tr("menu.help"));
+    return names;
 }
 
 juce::PopupMenu MainWindow::getMenuForIndex(int menuIndex, const juce::String&)
@@ -111,15 +215,22 @@ juce::PopupMenu MainWindow::getMenuForIndex(int menuIndex, const juce::String&)
 
     if (menuIndex == 0)
     {
-        menu.addItem(menuOpen, "Open Project...");
-        menu.addItem(menuSave, "Save Project");
+        menu.addItem(menuOpen, host::i18n::tr("menu.file.open"));
+        menu.addItem(menuSave, host::i18n::tr("menu.file.save"));
+        menu.addItem(menuNewEmpty, host::i18n::tr("menu.file.newEmpty"));
         menu.addSeparator();
-        menu.addItem(menuDeviceSelector, "Audio Device Setup...");
-        menu.addItem(menuPreferences, "Preferences...");
+        menu.addItem(menuDeviceSelector, host::i18n::tr("menu.file.audioSettings"));
+        menu.addItem(menuPreferences, host::i18n::tr("menu.file.preferences"));
+        menu.addSeparator();
+        menu.addItem(menuExit, host::i18n::tr("menu.file.exit"));
     }
     else if (menuIndex == 1)
     {
-        menu.addItem(menuRescan, "Rescan Plugins");
+        menu.addItem(menuRescan, host::i18n::tr("menu.edit.rescan"));
+    }
+    else if (menuIndex == 3)
+    {
+        menu.addItem(menuHelpShow, host::i18n::tr("menu.help.show"));
     }
 
     return menu;
@@ -131,21 +242,236 @@ void MainWindow::menuItemSelected(int menuItemID, int)
     {
         case menuOpen:      loadProject(); break;
         case menuSave:      saveProject(); break;
+        case menuNewEmpty:  initialiseGraph(); break;
         case menuPreferences: openPreferences(); break;
         case menuDeviceSelector: showDeviceSelector(); break;
         case menuRescan:
             if (pluginScanner)
                 pluginScanner->scanAsync();
             break;
+        case menuExit:      exitApplication(); break;
+        case menuHelpShow:  showHelpDialog(); break;
         default:
             break;
     }
 }
 
+void MainWindow::minimiseToTray()
+{
+    hiddenToTray = true;
+    setVisible(false);
+}
+
+void MainWindow::restoreFromTray()
+{
+    hiddenToTray = false;
+    setVisible(true);
+    setMinimised(false);
+    toFront(true);
+    graphView.grabKeyboardFocus();
+}
+
+void MainWindow::toggleVisibilityFromTray()
+{
+    if (hiddenToTray || ! isVisible())
+        restoreFromTray();
+    else
+        minimiseToTray();
+}
+
+void MainWindow::showSettingsFromTray()
+{
+    restoreFromTray();
+    openPreferences();
+}
+
+void MainWindow::exitApplication()
+{
+    if (auto* app = juce::JUCEApplication::getInstance())
+        app->systemRequestedQuit();
+}
+
+void MainWindow::loadConfiguration()
+{
+    configDirectory = juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory).getChildFile("VSTHost");
+    if (! configDirectory.isDirectory())
+        configDirectory.createDirectory();
+
+    configFile = configDirectory.getChildFile("config.json");
+    pluginCacheFile = configDirectory.getChildFile("plugin-cache.json");
+    lastSessionFile = configDirectory.getChildFile("last-session.json");
+
+    const bool loaded = config.load(configFile);
+    bool needsSave = ! loaded;
+
+    if (config.getPluginDirectories().empty())
+    {
+        config.setPluginDirectories(getDefaultPluginDirectories());
+        needsSave = true;
+    }
+
+    auto settings = config.getEngineSettings();
+    if (settings.sampleRate <= 0.0 || settings.blockSize <= 0)
+    {
+        auto current = deviceEngine.getEngineConfig();
+        settings.sampleRate = current.sampleRate;
+        settings.blockSize = current.blockSize;
+        config.setEngineSettings(settings);
+        needsSave = true;
+    }
+
+    host::audio::EngineConfig engineCfg { settings.sampleRate, settings.blockSize };
+    deviceEngine.setEngineConfig(engineCfg);
+
+    if (pluginScanner)
+    {
+        pluginScanner->setSearchPaths(config.getPluginDirectories());
+        pluginScanner->loadCache(pluginCacheFile);
+    }
+
+    auto languageCode = config.getLanguage();
+    if (languageCode.isEmpty())
+        languageCode = "en";
+
+    auto languageDir = configDirectory.getChildFile("i18n");
+    if (languageDir.isDirectory())
+    {
+        host::i18n::manager().loadOverridesFromFile(languageDir.getChildFile("en.json"));
+        host::i18n::manager().loadOverridesFromFile(languageDir.getChildFile(languageCode + ".json"));
+    }
+
+    host::i18n::manager().setLanguage(languageCode);
+
+    if (needsSave)
+        saveConfiguration();
+}
+
+void MainWindow::saveConfiguration()
+{
+    if (! configDirectory.isDirectory())
+        configDirectory.createDirectory();
+
+    auto engineCfg = deviceEngine.getEngineConfig();
+    config.setEngineSettings({ engineCfg.sampleRate, engineCfg.blockSize });
+
+    if (pluginScanner)
+    {
+        std::vector<juce::File> paths;
+        const auto& scannerPaths = pluginScanner->getSearchPaths();
+        paths.reserve(static_cast<size_t>(scannerPaths.size()));
+        for (auto& path : scannerPaths)
+            paths.push_back(path);
+        config.setPluginDirectories(paths);
+    }
+
+    config.setLanguage(host::i18n::manager().getLanguage());
+
+    config.save(configFile);
+}
+
+bool MainWindow::loadStartupGraph()
+{
+    const auto preset = config.getDefaultPreset();
+    if (preset.getFullPathName().isNotEmpty())
+    {
+        if (preset.existsAsFile())
+        {
+            if (loadProjectFromFile(preset))
+                return true;
+
+            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                   host::i18n::tr("error.loadPreset.title"),
+                                                   host::i18n::tr("error.loadPreset.message").replace("%1", preset.getFullPathName()));
+        }
+        else
+        {
+            juce::Logger::writeToLog("Default preset not found: " + preset.getFullPathName());
+        }
+    }
+
+    if (lastSessionFile.existsAsFile())
+        return loadProjectFromFile(lastSessionFile);
+
+    return false;
+}
+
+bool MainWindow::loadProjectFromFile(const juce::File& file)
+{
+    if (! file.existsAsFile())
+        return false;
+
+    host::persist::Project project;
+    if (! project.load(file))
+        return false;
+
+    rebuildGraphFromProject(project);
+    return true;
+}
+
+void MainWindow::saveLastSession()
+{
+    if (! graphEngine)
+        return;
+
+    if (lastSessionFile.getFullPathName().isEmpty())
+        return;
+
+    auto parent = lastSessionFile.getParentDirectory();
+    if (! parent.isDirectory())
+        parent.createDirectory();
+
+    host::persist::Project project;
+    project.save(lastSessionFile, *graphEngine);
+}
+
+std::vector<juce::File> MainWindow::getDefaultPluginDirectories() const
+{
+    std::vector<juce::File> defaults;
+#if JUCE_MAC
+    defaults.emplace_back("/Library/Audio/Plug-Ins/VST3");
+    defaults.emplace_back(juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile("Library/Audio/Plug-Ins/VST3"));
+#elif JUCE_WINDOWS
+    defaults.emplace_back("C:/Program Files/Common Files/VST3");
+    defaults.emplace_back("C:/Program Files (x86)/Common Files/VST3");
+    defaults.emplace_back("C:/Program Files/Steinberg/VstPlugins");
+#else
+    defaults.emplace_back(juce::File::getSpecialLocation(juce::File::userHomeDirectory).getChildFile(".vst3"));
+    defaults.emplace_back("/usr/lib/vst3");
+    defaults.emplace_back("/usr/local/lib/vst3");
+#endif
+    return defaults;
+}
+
+void MainWindow::refreshTranslations()
+{
+    setName(host::i18n::tr("app.title"));
+    if (trayIcon)
+        trayIcon->setIconTooltip(host::i18n::tr("app.title"));
+
+    menuItemsChanged();
+    pluginBrowser.refreshTranslations();
+    pluginBrowser.repaint();
+    graphView.repaint();
+}
+
+void MainWindow::showHelpDialog()
+{
+    juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::InfoIcon,
+                                           host::i18n::tr("help.title"),
+                                           host::i18n::tr("help.content"));
+}
+
+void MainWindow::changeListenerCallback(juce::ChangeBroadcaster* source)
+{
+    if (source == &host::i18n::manager())
+        refreshTranslations();
+}
+
 void MainWindow::initialiseGraph()
 {
     graphEngine->clear();
-    graphEngine->setEngineFormat(48000.0, 256);
+    const auto engineCfg = deviceEngine.getEngineConfig();
+    graphEngine->setEngineFormat(engineCfg.sampleRate, engineCfg.blockSize);
 
     auto inputId = graphEngine->addNode(std::make_unique<host::graph::nodes::AudioInNode>());
     auto outputId = graphEngine->addNode(std::make_unique<host::graph::nodes::AudioOutNode>());
@@ -159,8 +485,15 @@ void MainWindow::initialiseGraph()
 void MainWindow::openPreferences()
 {
     juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned(new host::gui::PreferencesComponent(deviceEngine, pluginScanner, deviceManager));
-    options.dialogTitle = "Preferences";
+    options.content.setOwned(new host::gui::PreferencesComponent(deviceEngine,
+                                                                 pluginScanner,
+                                                                 deviceManager,
+                                                                 config,
+                                                                 [this](const host::persist::Config&)
+                                                                 {
+                                                                     saveConfiguration();
+                                                                 }));
+    options.dialogTitle = host::i18n::tr("dialog.preferences.title");
     options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
     options.resizable = true;
@@ -174,7 +507,7 @@ void MainWindow::showDeviceSelector()
 
     juce::DialogWindow::LaunchOptions options;
     options.content.setNonOwned(&selector);
-    options.dialogTitle = "Audio Device Settings";
+    options.dialogTitle = host::i18n::tr("dialog.audioSettings.title");
     options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
     options.resizable = false;
@@ -404,8 +737,11 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
 
     if (missingPlugins.size() > 0)
     {
-        const auto message = "Some plugins could not be loaded:\n" + missingPlugins.joinIntoString("\n");
-        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Missing Plugins", message);
+        const auto missingList = missingPlugins.joinIntoString("\n");
+        const auto message = host::i18n::tr("error.missingPlugins.message").replace("%1", missingList);
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               host::i18n::tr("error.missingPlugins.title"),
+                                               message);
     }
 }
 
@@ -428,16 +764,16 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
     catch (const std::exception& e)
     {
         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                               "Load Plugin",
-                                               "Failed to load plugin:\n" + juce::String(e.what()));
+                                               host::i18n::tr("error.loadPlugin.title"),
+                                               host::i18n::tr("error.loadPlugin.failed").replace("%1", juce::String(e.what())));
         return;
     }
 
     if (! instance)
     {
         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                               "Load Plugin",
-                                               "Could not instantiate the selected plugin.");
+                                               host::i18n::tr("error.loadPlugin.title"),
+                                               host::i18n::tr("error.loadPlugin.instantiate"));
         return;
     }
 
@@ -451,8 +787,8 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
     catch (const std::exception& e)
     {
         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                               "Graph Update",
-                                               "Failed to add plugin node:\n" + juce::String(e.what()));
+                                               host::i18n::tr("error.graphUpdate.title"),
+                                               host::i18n::tr("error.graphUpdate.message").replace("%1", juce::String(e.what())));
         return;
     }
 
@@ -500,8 +836,8 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
     catch (const std::exception& e)
     {
         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                               "Graph Prepare",
-                                               "The graph could not be prepared:\n" + juce::String(e.what()));
+                                               host::i18n::tr("error.graphPrepare.title"),
+                                               host::i18n::tr("error.graphPrepare.message").replace("%1", juce::String(e.what())));
     }
 
     if (! preparedOK)
@@ -540,31 +876,32 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
     }
 
     graphView.refreshGraph(true);
+    if (! newNodeId.isNull())
+        graphView.focusOnNode(newNodeId);
 }
 
 void MainWindow::loadProject()
 {
-    juce::FileChooser chooser("Open project", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory), "*.json");
+    juce::FileChooser chooser(host::i18n::tr("fileChooser.openProject"),
+                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                              "*.json");
     if (! chooser.browseForFileToOpen())
         return;
 
     auto file = chooser.getResult();
-    host::persist::Project project;
-    if (project.load(file))
-    {
-        rebuildGraphFromProject(project);
-    }
-    else
+    if (! loadProjectFromFile(file))
     {
         juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                               "Load Failed",
-                                               "Unable to load the selected project file.");
+                                               host::i18n::tr("error.loadProject.title"),
+                                               host::i18n::tr("error.loadProject.message"));
     }
 }
 
 void MainWindow::saveProject()
 {
-    juce::FileChooser chooser("Save project", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory), "*.json");
+    juce::FileChooser chooser(host::i18n::tr("fileChooser.saveProject"),
+                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                              "*.json");
     if (! chooser.browseForFileToSave(true))
         return;
 

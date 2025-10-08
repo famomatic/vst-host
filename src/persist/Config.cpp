@@ -29,6 +29,14 @@ namespace host::persist
                 for (auto& entry : *arr)
                     pluginDirectories.emplace_back(entry.toString());
             }
+
+            if (auto presetValue = object->getProperty("defaultPreset"); presetValue.isString())
+                defaultPreset = juce::File(presetValue.toString());
+            else
+                defaultPreset = juce::File();
+
+            if (auto languageValue = object->getProperty("language"); languageValue.isString())
+                language = languageValue.toString();
         }
 
         return true;
@@ -45,6 +53,8 @@ namespace host::persist
             directories.add(dir.getFullPathName());
 
         obj->setProperty("pluginDirectories", juce::var(directories));
+        obj->setProperty("defaultPreset", defaultPreset.getFullPathName());
+        obj->setProperty("language", language);
         auto json = juce::JSON::toString(juce::var(obj.get()), true);
         return file.replaceWithText(json);
     }
