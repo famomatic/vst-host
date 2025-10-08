@@ -36,6 +36,15 @@ namespace
         menuHelpShow,
         menuViewConsole
     };
+
+    constexpr int kPluginEditorMinWidth = 480;
+    constexpr int kPluginEditorMinHeight = 320;
+    constexpr int kPluginEditorMaxWidth = 4096;
+    constexpr int kPluginEditorMaxHeight = 3072;
+    constexpr int kPluginSettingsMinWidth = 440;
+    constexpr int kPluginSettingsMinHeight = 300;
+    constexpr int kPluginSettingsMaxWidth = 2048;
+    constexpr int kPluginSettingsMaxHeight = 1400;
 }
 
 class MainWindow::TrayIcon : public juce::SystemTrayIconComponent
@@ -523,6 +532,13 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
         {
             if (auto editor = plugin->createEditorComponent())
             {
+                auto* editorPtr = editor.get();
+                const int editorMinWidth = juce::jmax(editorPtr->getWidth(), kPluginEditorMinWidth);
+                const int editorMinHeight = juce::jmax(editorPtr->getHeight(), kPluginEditorMinHeight);
+
+                if (editorPtr->getWidth() != editorMinWidth || editorPtr->getHeight() != editorMinHeight)
+                    editorPtr->setSize(editorMinWidth, editorMinHeight);
+
                 juce::DialogWindow::LaunchOptions options;
                 options.content.setOwned(editor.release());
                 options.dialogTitle = juce::String(vstNode->name());
@@ -531,7 +547,17 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
                 options.resizable = true;
                 options.escapeKeyTriggersCloseButton = true;
                 options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
-                options.launchAsync();
+                options.useBottomRightCornerResizer = true;
+
+                if (auto* dialog = options.launchAsync())
+                {
+                    const int editorMaxWidth = juce::jmax(editorMinWidth, kPluginEditorMaxWidth);
+                    const int editorMaxHeight = juce::jmax(editorMinHeight, kPluginEditorMaxHeight);
+                    dialog->setResizeLimits(editorMinWidth, editorMinHeight, editorMaxWidth, editorMaxHeight);
+                    const auto currentBounds = dialog->getBounds();
+                    dialog->setBounds(currentBounds.withSizeKeepingCentre(juce::jmax(currentBounds.getWidth(), editorMinWidth),
+                                                                          juce::jmax(currentBounds.getHeight(), editorMinHeight)));
+                }
                 return;
             }
         }
@@ -548,15 +574,32 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
                                                                                       graphView.refreshGraph(true);
                                                                                   });
 
+    auto* settingsComponentPtr = settingsComponent.get();
+    const int settingsMinWidth = juce::jmax(settingsComponentPtr->getWidth(), kPluginSettingsMinWidth);
+    const int settingsMinHeight = juce::jmax(settingsComponentPtr->getHeight(), kPluginSettingsMinHeight);
+
+    if (settingsComponentPtr->getWidth() != settingsMinWidth || settingsComponentPtr->getHeight() != settingsMinHeight)
+        settingsComponentPtr->setSize(settingsMinWidth, settingsMinHeight);
+
     juce::DialogWindow::LaunchOptions options;
     options.content.setOwned(settingsComponent.release());
     options.dialogTitle = host::i18n::tr("plugin.settings.title");
     options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
-    options.resizable = false;
+    options.resizable = true;
+    options.useBottomRightCornerResizer = true;
     options.escapeKeyTriggersCloseButton = true;
     options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
-    options.runModal();
+
+    if (auto* dialog = options.launchAsync())
+    {
+        const int settingsMaxWidth = juce::jmax(settingsMinWidth, kPluginSettingsMaxWidth);
+        const int settingsMaxHeight = juce::jmax(settingsMinHeight, kPluginSettingsMaxHeight);
+        dialog->setResizeLimits(settingsMinWidth, settingsMinHeight, settingsMaxWidth, settingsMaxHeight);
+        const auto currentBounds = dialog->getBounds();
+        dialog->setBounds(currentBounds.withSizeKeepingCentre(juce::jmax(currentBounds.getWidth(), settingsMinWidth),
+                                                              juce::jmax(currentBounds.getHeight(), settingsMinHeight)));
+    }
 }
 
 void MainWindow::changeListenerCallback(juce::ChangeBroadcaster* source)
