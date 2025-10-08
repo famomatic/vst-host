@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <system_error>
 #include <unordered_map>
@@ -533,30 +534,106 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
             if (auto editor = plugin->createEditorComponent())
             {
                 auto* editorPtr = editor.get();
-                const int editorMinWidth = juce::jmax(editorPtr->getWidth(), kPluginEditorMinWidth);
-                const int editorMinHeight = juce::jmax(editorPtr->getHeight(), kPluginEditorMinHeight);
+                const bool editorResizable = editorPtr->isResizable();
 
-                if (editorPtr->getWidth() != editorMinWidth || editorPtr->getHeight() != editorMinHeight)
-                    editorPtr->setSize(editorMinWidth, editorMinHeight);
+                int preferredContentWidth = juce::jmax(1, editorPtr->getWidth());
+                int preferredContentHeight = juce::jmax(1, editorPtr->getHeight());
+
+                int minContentWidth = editorResizable ? kPluginEditorMinWidth : preferredContentWidth;
+                int minContentHeight = editorResizable ? kPluginEditorMinHeight : preferredContentHeight;
+                int maxContentWidth = editorResizable ? kPluginEditorMaxWidth : preferredContentWidth;
+                int maxContentHeight = editorResizable ? kPluginEditorMaxHeight : preferredContentHeight;
+
+                if (auto* constrainer = editorPtr->getConstrainer())
+                {
+                    minContentWidth = juce::jmax(minContentWidth, constrainer->getMinimumWidth());
+                    minContentHeight = juce::jmax(minContentHeight, constrainer->getMinimumHeight());
+
+                    const int constrainerMaxWidth = constrainer->getMaximumWidth();
+                    if (constrainerMaxWidth > 0)
+                        maxContentWidth = juce::jmin(maxContentWidth, constrainerMaxWidth);
+
+                    const int constrainerMaxHeight = constrainer->getMaximumHeight();
+                    if (constrainerMaxHeight > 0)
+                        maxContentHeight = juce::jmin(maxContentHeight, constrainerMaxHeight);
+                }
+
+                if (! editorResizable)
+                {
+                    minContentWidth = preferredContentWidth;
+                    minContentHeight = preferredContentHeight;
+                    maxContentWidth = preferredContentWidth;
+                    maxContentHeight = preferredContentHeight;
+                }
+
+                const auto resolvedMaxContentWidth = maxContentWidth > 0 ? juce::jmax(minContentWidth, maxContentWidth) : std::numeric_limits<int>::max();
+                const auto resolvedMaxContentHeight = maxContentHeight > 0 ? juce::jmax(minContentHeight, maxContentHeight) : std::numeric_limits<int>::max();
+
+                const int clampedContentWidth = juce::jlimit(minContentWidth, resolvedMaxContentWidth, preferredContentWidth);
+                const int clampedContentHeight = juce::jlimit(minContentHeight, resolvedMaxContentHeight, preferredContentHeight);
+
+                if (editorPtr->getWidth() != clampedContentWidth || editorPtr->getHeight() != clampedContentHeight)
+                    editorPtr->setSize(clampedContentWidth, clampedContentHeight);
 
                 juce::DialogWindow::LaunchOptions options;
                 options.content.setOwned(editor.release());
                 options.dialogTitle = juce::String(vstNode->name());
                 options.componentToCentreAround = this;
                 options.useNativeTitleBar = true;
-                options.resizable = true;
+                options.resizable = editorResizable;
                 options.escapeKeyTriggersCloseButton = true;
                 options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
-                options.useBottomRightCornerResizer = true;
+                options.useBottomRightCornerResizer = editorResizable;
 
                 if (auto* dialog = options.launchAsync())
                 {
-                    const int editorMaxWidth = juce::jmax(editorMinWidth, kPluginEditorMaxWidth);
-                    const int editorMaxHeight = juce::jmax(editorMinHeight, kPluginEditorMaxHeight);
-                    dialog->setResizeLimits(editorMinWidth, editorMinHeight, editorMaxWidth, editorMaxHeight);
                     const auto currentBounds = dialog->getBounds();
-                    dialog->setBounds(currentBounds.withSizeKeepingCentre(juce::jmax(currentBounds.getWidth(), editorMinWidth),
-                                                                          juce::jmax(currentBounds.getHeight(), editorMinHeight)));
+                    const auto* display = juce::Desktop::getInstance().getDisplays().getDisplayForRect(currentBounds);
+                    const auto userArea = display != nullptr ? display->userArea
+                                                             : juce::Desktop::getInstance().getDisplays().getTotalBounds(true);
+
+                    const auto contentBorder = dialog->getContentComponentBorder();
+                    const auto windowBorder = dialog->getBorderThickness();
+                    const int horizontalPadding = contentBorder.getLeftAndRight() + windowBorder.getLeftAndRight();
+                    const int verticalPadding = contentBorder.getTopAndBottom() + windowBorder.getTopAndBottom();
+
+                    const int availableContentWidth = juce::jmax(1, userArea.getWidth() - horizontalPadding);
+                    const int availableContentHeight = juce::jmax(1, userArea.getHeight() - verticalPadding);
+
+                    const int screenMinContentWidth = juce::jmin(minContentWidth, availableContentWidth);
+                    const int screenMinContentHeight = juce::jmin(minContentHeight, availableContentHeight);
+
+                    int screenMaxContentWidth = resolvedMaxContentWidth == std::numeric_limits<int>::max()
+                                                    ? availableContentWidth
+                                                    : juce::jmin(resolvedMaxContentWidth, availableContentWidth);
+                    int screenMaxContentHeight = resolvedMaxContentHeight == std::numeric_limits<int>::max()
+                                                      ? availableContentHeight
+                                                      : juce::jmin(resolvedMaxContentHeight, availableContentHeight);
+
+                    screenMaxContentWidth = juce::jmax(screenMinContentWidth, screenMaxContentWidth);
+                    screenMaxContentHeight = juce::jmax(screenMinContentHeight, screenMaxContentHeight);
+
+                    const int minWindowWidth = screenMinContentWidth + horizontalPadding;
+                    const int minWindowHeight = screenMinContentHeight + verticalPadding;
+                    const int maxWindowWidth = screenMaxContentWidth + horizontalPadding;
+                    const int maxWindowHeight = screenMaxContentHeight + verticalPadding;
+
+                    dialog->setResizeLimits(minWindowWidth, minWindowHeight, maxWindowWidth, maxWindowHeight);
+
+                    const int targetWindowWidth = juce::jlimit(minWindowWidth, maxWindowWidth, currentBounds.getWidth());
+                    const int targetWindowHeight = juce::jlimit(minWindowHeight, maxWindowHeight, currentBounds.getHeight());
+                    auto adjustedBounds = currentBounds.withSizeKeepingCentre(targetWindowWidth, targetWindowHeight);
+                    adjustedBounds = adjustedBounds.constrainedWithin(userArea);
+                    dialog->setBounds(adjustedBounds);
+
+                    if (auto* content = dialog->getContentComponent())
+                    {
+                        const int targetContentWidth = juce::jlimit(screenMinContentWidth, screenMaxContentWidth, content->getWidth());
+                        const int targetContentHeight = juce::jlimit(screenMinContentHeight, screenMaxContentHeight, content->getHeight());
+
+                        if (content->getWidth() != targetContentWidth || content->getHeight() != targetContentHeight)
+                            content->setSize(targetContentWidth, targetContentHeight);
+                    }
                 }
                 return;
             }
