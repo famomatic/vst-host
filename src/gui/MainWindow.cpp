@@ -4,6 +4,7 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <system_error>
 #include <unordered_map>
@@ -157,8 +158,7 @@ namespace
             editorComponent.setSize(targetContentWidth, targetContentHeight);
     }
 
-    class PluginEditorWindowController : public juce::ComponentListener,
-                                         public juce::ReferenceCountedObject
+    class PluginEditorWindowController : public juce::ComponentListener
     {
     public:
         PluginEditorWindowController(juce::DialogWindow& dialogIn,
@@ -206,6 +206,16 @@ namespace
         juce::Component::SafePointer<juce::DialogWindow> dialog;
         juce::Component::SafePointer<juce::Component> editor;
         bool editorResizable { false };
+    };
+
+    struct PluginEditorControllerAttachment final : public juce::DynamicObject
+    {
+        explicit PluginEditorControllerAttachment(std::unique_ptr<PluginEditorWindowController> controllerIn)
+            : controller(std::move(controllerIn))
+        {
+        }
+
+        std::unique_ptr<PluginEditorWindowController> controller;
     };
 }
 
@@ -719,9 +729,10 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
 
                     if (auto* content = dialog->getContentComponent())
                     {
-                        auto controller = juce::ReferenceCountedObjectPtr<PluginEditorWindowController>(new PluginEditorWindowController(*dialog, *content, editorResizable));
-                        dialog->getProperties().set(kPluginEditorControllerProperty, juce::var(controller.get()));
+                        auto controller = std::make_unique<PluginEditorWindowController>(*dialog, *content, editorResizable);
                         controller->applySizing();
+                        dialog->getProperties().set(kPluginEditorControllerProperty,
+                                                    juce::var(new PluginEditorControllerAttachment(std::move(controller))));
                     }
                 }
                 return;
