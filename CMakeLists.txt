@@ -33,5 +33,7 @@ if(NOT EXISTS ${JUCE_SUBMODULE_DIR}/CMakeLists.txt)
     message(FATAL_ERROR "JUCE submodule not found. Please initialise submodules under externals/JUCE.")
 endif()
 
+add_subdirectory(${VST3_SDK_DIR})
+
 add_subdirectory(externals/JUCE)
 add_subdirectory(src)
