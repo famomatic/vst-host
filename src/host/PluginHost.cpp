@@ -92,7 +92,7 @@ namespace
 
             *obj = nullptr;
 
-            const Steinberg::FUID requested(iid);
+            const auto requested = Steinberg::FUID::fromTUID(iid);
             if (requested == Steinberg::Vst::IMessage::iid)
             {
                 auto message = Steinberg::owned(new Steinberg::Vst::HostMessage());
