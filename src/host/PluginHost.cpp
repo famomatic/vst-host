@@ -7,6 +7,7 @@
 #include <mutex>
 #include <optional>
 #include <cctype>
+#include <cstdint>
 #include <vector>
 #include <filesystem>
 #include <string>
@@ -37,9 +38,17 @@
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivsthostapplication.h>
+#include <pluginterfaces/vst/ivstcontextmenu.h>
 #include <pluginterfaces/vst/ivstevents.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
 #include <pluginterfaces/vst/vsttypes.h>
+
+#include <public.sdk/source/common/memorystream.h>
+#include <public.sdk/source/vst/hosting/hostclasses.h>
+
+#ifndef VST_HOST_OPCODE_GET_TIME
+#define VST_HOST_OPCODE_GET_TIME 0x07
+#endif
 
 #if defined(VST_VERSION)
  #undef VST_VERSION
@@ -76,12 +85,34 @@ namespace
             return Steinberg::kResultOk;
         }
 
-        Steinberg::tresult PLUGIN_API createInstance(Steinberg::TUID, Steinberg::TUID, void** obj) override
+        Steinberg::tresult PLUGIN_API createInstance(Steinberg::TUID, Steinberg::TUID iid, void** obj) override
         {
             if (obj == nullptr)
                 return Steinberg::kInvalidArgument;
 
             *obj = nullptr;
+
+            const Steinberg::FUID requested(iid);
+            if (requested == Steinberg::Vst::IMessage::iid)
+            {
+                auto message = Steinberg::owned(new Steinberg::Vst::HostMessage());
+                if (! message)
+                    return Steinberg::kOutOfMemory;
+
+                *obj = message.take();
+                return Steinberg::kResultTrue;
+            }
+
+            if (requested == Steinberg::Vst::IAttributeList::iid)
+            {
+                auto attributes = Steinberg::Vst::HostAttributeList::make();
+                if (! attributes)
+                    return Steinberg::kOutOfMemory;
+
+                *obj = attributes.take();
+                return Steinberg::kResultTrue;
+            }
+
             return Steinberg::kResultFalse;
         }
 
@@ -115,7 +146,8 @@ namespace
     };
 
     class SimpleComponentHandler final : public Steinberg::Vst::IComponentHandler,
-                                         public Steinberg::Vst::IComponentHandler2
+                                         public Steinberg::Vst::IComponentHandler2,
+                                         public Steinberg::Vst::IComponentHandler3
     {
     public:
         SimpleComponentHandler() = default;
@@ -130,6 +162,7 @@ namespace
         Steinberg::tresult PLUGIN_API requestOpenEditor(Steinberg::FIDString) override { return Steinberg::kResultOk; }
         Steinberg::tresult PLUGIN_API startGroupEdit() override { return Steinberg::kResultOk; }
         Steinberg::tresult PLUGIN_API finishGroupEdit() override { return Steinberg::kResultOk; }
+        Steinberg::Vst::IContextMenu* PLUGIN_API createContextMenu(Steinberg::IPlugView*, const Steinberg::Vst::ParamID*) override { return nullptr; }
 
         Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid, void** obj) override
         {
@@ -139,6 +172,7 @@ namespace
             QUERY_INTERFACE(iid, obj, Steinberg::FUnknown::iid, Steinberg::Vst::IComponentHandler)
             QUERY_INTERFACE(iid, obj, Steinberg::Vst::IComponentHandler::iid, Steinberg::Vst::IComponentHandler)
             QUERY_INTERFACE(iid, obj, Steinberg::Vst::IComponentHandler2::iid, Steinberg::Vst::IComponentHandler2)
+            QUERY_INTERFACE(iid, obj, Steinberg::Vst::IComponentHandler3::iid, Steinberg::Vst::IComponentHandler3)
 
             *obj = nullptr;
             return Steinberg::kNoInterface;
@@ -160,6 +194,27 @@ namespace
     private:
         std::atomic<uint32_t> refCount { 1 };
     };
+
+    struct HostTimeInfo
+    {
+        double samplePos { 0.0 };
+        double sampleRate { 0.0 };
+        double nanoSeconds { 0.0 };
+        double ppqPos { 0.0 };
+        double tempo { 120.0 };
+        double barStartPos { 0.0 };
+        double cycleStartPos { 0.0 };
+        double cycleEndPos { 0.0 };
+        int32_t timeSigNumerator { 4 };
+        int32_t timeSigDenominator { 4 };
+        int32_t smpteOffset { 0 };
+        int32_t smpteFrameRate { 0 };
+        int32_t samplesToNextClock { 0 };
+        int32_t flags { 0 };
+    };
+
+    constexpr int32_t kTimeInfoFlagTempoValid = 1 << 10;
+    constexpr int32_t kTimeInfoFlagTimeSigValid = 1 << 13;
 
 #if defined(_WIN32)
     using ModuleHandle = HMODULE;
@@ -776,7 +831,8 @@ namespace
                            bool alreadyInitialized,
                            Steinberg::IPtr<SimpleHostApplication> hostContextIn,
                            Steinberg::IPtr<SimpleComponentHandler> componentHandlerIn,
-                           bool controllerIsInitialised)
+                           bool controllerIsInitialised,
+                           bool connectionPointsLinked)
             : module(std::move(moduleIn))
             , component(componentIn)
             , processor(processorIn)
@@ -788,6 +844,7 @@ namespace
             , outputArrangement(outputArrangementIn)
             , initialized(alreadyInitialized)
             , controllerInitialized(controllerIsInitialised)
+            , connectionPointsConnected(connectionPointsLinked)
             , hostContext(std::move(hostContextIn))
             , componentHandler(std::move(componentHandlerIn))
             , inputEvents_(std::make_unique<EventList>())
@@ -996,6 +1053,18 @@ namespace
                 active = false;
             }
 
+            if (connectionPointsConnected && component && controller)
+            {
+                Steinberg::FUnknownPtr<Steinberg::Vst::IConnectionPoint> componentConnection(component);
+                Steinberg::FUnknownPtr<Steinberg::Vst::IConnectionPoint> controllerConnection(controller);
+                if (componentConnection && controllerConnection)
+                {
+                    componentConnection->disconnect(controllerConnection);
+                    controllerConnection->disconnect(componentConnection);
+                }
+                connectionPointsConnected = false;
+            }
+
             if (controller)
             {
                 if (controllerInitialized)
@@ -1038,6 +1107,7 @@ namespace
         int maxInputs { 0 };
         int maxOutputs { 0 };
         bool controllerInitialized { false };
+        bool connectionPointsConnected { false };
         Steinberg::IPtr<SimpleHostApplication> hostContext;
         Steinberg::IPtr<SimpleComponentHandler> componentHandler;
         std::unique_ptr<EventList> inputEvents_;
@@ -1300,7 +1370,7 @@ namespace
             if (numFrames > blockSize)
                 return;
 
-            if (effect->num_inputs != inCh || effect->num_outputs != outCh)
+            if (effect->num_inputs > inCh || effect->num_outputs > outCh)
                 return;
 
             std::array<float*, kVst2MaxChannels> inputs {};
@@ -1681,9 +1751,29 @@ namespace
         case VST_HOST_OPCODE_SUPPORTS:
             if (ptr == nullptr)
                 return VST_STATUS_FALSE;
-            if (std::strcmp(ptr, vst_host_supports.sizeWindow) == 0)
+            if (std::strcmp(ptr, vst_host_supports.sizeWindow) == 0
+                || std::strcmp(ptr, vst_host_supports.sendVstTimeInfo) == 0)
                 return VST_STATUS_TRUE;
             return VST_STATUS_FALSE;
+        case VST_HOST_OPCODE_GET_TIME:
+        {
+            static HostTimeInfo timeInfo {};
+            timeInfo.samplePos = 0.0;
+            timeInfo.sampleRate = instance != nullptr ? instance->currentSampleRate() : 44100.0;
+            timeInfo.nanoSeconds = 0.0;
+            timeInfo.ppqPos = 0.0;
+            timeInfo.tempo = 120.0;
+            timeInfo.barStartPos = 0.0;
+            timeInfo.cycleStartPos = 0.0;
+            timeInfo.cycleEndPos = 0.0;
+            timeInfo.timeSigNumerator = 4;
+            timeInfo.timeSigDenominator = 4;
+            timeInfo.smpteOffset = 0;
+            timeInfo.smpteFrameRate = 0;
+            timeInfo.samplesToNextClock = 0;
+            timeInfo.flags = kTimeInfoFlagTempoValid | kTimeInfoFlagTimeSigValid;
+            return reinterpret_cast<intptr_t>(&timeInfo);
+        }
         case VST_HOST_OPCODE_EDITOR_RESIZE:
             if (instance != nullptr)
             {
@@ -1763,8 +1853,22 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
 
     auto hostContext = Steinberg::IPtr<SimpleHostApplication>(new SimpleHostApplication());
     auto componentHandler = Steinberg::IPtr<SimpleComponentHandler>(new SimpleComponentHandler());
+    bool controllerInitialized = false;
+    bool connectionPointsConnected = false;
     auto releaseController = [&](bool terminate)
     {
+        if (connectionPointsConnected && component && controller)
+        {
+            Steinberg::FUnknownPtr<Steinberg::Vst::IConnectionPoint> componentConnection(component);
+            Steinberg::FUnknownPtr<Steinberg::Vst::IConnectionPoint> controllerConnection(controller);
+            if (componentConnection && controllerConnection)
+            {
+                componentConnection->disconnect(controllerConnection);
+                controllerConnection->disconnect(componentConnection);
+            }
+            connectionPointsConnected = false;
+        }
+
         if (controller)
         {
             if (terminate)
@@ -1773,8 +1877,9 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
             controller->release();
             controller = nullptr;
         }
+        controllerInitialized = false;
+        connectionPointsConnected = false;
     };
-    bool controllerInitialized = false;
 
     bool componentInitialised = false;
     juce::String selectedClassName;
@@ -1926,6 +2031,38 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         }
     }
 
+    if (controller && controllerInitialized && component)
+    {
+        auto stateStream = Steinberg::owned(new Steinberg::MemoryStream());
+        if (stateStream)
+        {
+            const auto stateResult = component->getState(stateStream);
+            if (stateResult == Steinberg::kResultOk || stateResult == Steinberg::kResultTrue)
+            {
+                stateStream->seek(0, Steinberg::IBStream::kIBSeekSet, nullptr);
+                controller->setComponentState(stateStream);
+            }
+        }
+    }
+
+    if (controller && controllerInitialized && component && ! connectionPointsConnected)
+    {
+        Steinberg::FUnknownPtr<Steinberg::Vst::IConnectionPoint> componentConnection(component);
+        Steinberg::FUnknownPtr<Steinberg::Vst::IConnectionPoint> controllerConnection(controller);
+        if (componentConnection && controllerConnection)
+        {
+            const auto componentToController = componentConnection->connect(controllerConnection);
+            const auto controllerToComponent = controllerConnection->connect(componentConnection);
+            if (componentToController == Steinberg::kResultOk && controllerToComponent == Steinberg::kResultOk)
+                connectionPointsConnected = true;
+            else
+            {
+                componentConnection->disconnect(controllerConnection);
+                controllerConnection->disconnect(componentConnection);
+            }
+        }
+    }
+
     const auto inputBusCount = component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kInput);
     const auto outputBusCount = component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput);
     const juce::String classLabel = selectedClassName.isNotEmpty() ? ("'" + selectedClassName + "'")
@@ -1996,6 +2133,20 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     else if (outputArrangement == Steinberg::Vst::SpeakerArr::kEmpty && outputChannels == 1)
         outputArrangement = Steinberg::Vst::SpeakerArr::kMono;
 
+    Steinberg::Vst::SpeakerArrangement desiredInputArrangement = inputArrangement;
+    Steinberg::Vst::SpeakerArrangement desiredOutputArrangement = outputArrangement;
+    const Steinberg::int32 desiredInputBusCount = inputBusCount > 0 ? 1 : 0;
+    const auto setArrangementResult = processor->setBusArrangements(desiredInputBusCount > 0 ? &desiredInputArrangement : nullptr,
+                                                                    desiredInputBusCount,
+                                                                    &desiredOutputArrangement,
+                                                                    1);
+    if (setArrangementResult == Steinberg::kResultOk)
+    {
+        if (desiredInputBusCount > 0)
+            inputArrangement = desiredInputArrangement;
+        outputArrangement = desiredOutputArrangement;
+    }
+
     return std::make_unique<Vst3PluginInstance>(std::move(module),
                                                 component,
                                                 processor,
@@ -2007,7 +2158,8 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
                                                 true,
                                                 std::move(hostContext),
                                                 std::move(componentHandler),
-                                                controllerInitialized);
+                                                controllerInitialized,
+                                                connectionPointsConnected);
 }
 
 std::unique_ptr<PluginInstance> loadVst2(const PluginInfo& info)
@@ -2071,16 +2223,24 @@ std::unique_ptr<PluginInstance> loadVst2(const PluginInfo& info)
 
     effect->control(effect, VST_EFFECT_OPCODE_CREATE, 0, 0, nullptr, 0.0f);
 
-    if (effect->num_inputs != info.ins || effect->num_outputs != info.outs)
+    if (effect->num_outputs <= 0)
     {
-        juce::String message = "Channel configuration mismatch. Expected ";
-        message += juce::String(info.ins) + "/" + juce::String(info.outs);
-        message += ", got ";
-        message += juce::String(effect->num_inputs) + "/" + juce::String(effect->num_outputs);
-        logPluginLoadFailure(info, message);
-
+        logPluginLoadFailure(info, "Channel configuration reports zero outputs");
         effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0f);
         return nullptr;
+    }
+
+    if (effect->num_inputs != info.ins || effect->num_outputs != info.outs)
+    {
+        juce::String message("VST2 channel configuration mismatch");
+        if (! info.name.empty())
+            message += " (" + juce::String(info.name) + ")";
+        message += ": expected ";
+        message += juce::String(info.ins) + "/" + juce::String(info.outs);
+        message += ", plug-in reports ";
+        message += juce::String(effect->num_inputs) + "/" + juce::String(effect->num_outputs);
+        message += " (continuing)";
+        juce::Logger::writeToLog(message.trimEnd());
     }
 
     return std::make_unique<Vst2PluginInstance>(std::move(module), effect);
