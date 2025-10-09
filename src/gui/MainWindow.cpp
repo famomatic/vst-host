@@ -72,20 +72,25 @@ namespace
         if (preferredContentHeight <= 1)
             preferredContentHeight = kPluginEditorMinHeight;
 
-        int minContentWidth = editorResizable ? kPluginEditorMinWidth : preferredContentWidth;
-        int minContentHeight = editorResizable ? kPluginEditorMinHeight : preferredContentHeight;
+        int minContentWidth = editorResizable ? 1 : preferredContentWidth;
+        int minContentHeight = editorResizable ? 1 : preferredContentHeight;
         int maxContentWidth = kPluginEditorMaxWidth;
         int maxContentHeight = kPluginEditorMaxHeight;
+        int constrainerMinWidth = 0;
+        int constrainerMinHeight = 0;
 
         if (auto* audioProcessorEditor = dynamic_cast<juce::AudioProcessorEditor*>(&editorComponent))
         {
             if (auto* constrainer = audioProcessorEditor->getConstrainer())
             {
-                minContentWidth = juce::jmax(minContentWidth, constrainer->getMinimumWidth());
-                minContentHeight = juce::jmax(minContentHeight, constrainer->getMinimumHeight());
+                constrainerMinWidth = constrainer->getMinimumWidth();
+                constrainerMinHeight = constrainer->getMinimumHeight();
 
-                preferredContentWidth = juce::jmax(preferredContentWidth, minContentWidth);
-                preferredContentHeight = juce::jmax(preferredContentHeight, minContentHeight);
+                if (constrainerMinWidth > 0)
+                    minContentWidth = juce::jmax(minContentWidth, constrainerMinWidth);
+
+                if (constrainerMinHeight > 0)
+                    minContentHeight = juce::jmax(minContentHeight, constrainerMinHeight);
 
                 const int constrainerMaxWidth = constrainer->getMaximumWidth();
                 if (constrainerMaxWidth > 0)
@@ -96,6 +101,26 @@ namespace
                     maxContentHeight = juce::jmin(maxContentHeight, constrainerMaxHeight);
             }
         }
+
+        if (editorResizable)
+        {
+            if (constrainerMinWidth <= 0)
+            {
+                const int fallbackWidth = preferredContentWidth > 1 ? juce::jmin(preferredContentWidth, kPluginEditorMinWidth)
+                                                                    : kPluginEditorMinWidth;
+                minContentWidth = juce::jmax(minContentWidth, fallbackWidth);
+            }
+
+            if (constrainerMinHeight <= 0)
+            {
+                const int fallbackHeight = preferredContentHeight > 1 ? juce::jmin(preferredContentHeight, kPluginEditorMinHeight)
+                                                                      : kPluginEditorMinHeight;
+                minContentHeight = juce::jmax(minContentHeight, fallbackHeight);
+            }
+        }
+
+        preferredContentWidth = juce::jmax(preferredContentWidth, minContentWidth);
+        preferredContentHeight = juce::jmax(preferredContentHeight, minContentHeight);
 
         const int resolvedMaxContentWidth = maxContentWidth > 0 ? juce::jmax(minContentWidth, maxContentWidth) : std::numeric_limits<int>::max();
         const int resolvedMaxContentHeight = maxContentHeight > 0 ? juce::jmax(minContentHeight, maxContentHeight) : std::numeric_limits<int>::max();

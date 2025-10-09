@@ -9,6 +9,7 @@
 #include <cctype>
 #include <vector>
 #include <filesystem>
+#include <string>
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
@@ -213,6 +214,31 @@ namespace
         return std::nullopt;
     }
 
+    [[nodiscard]] juce::String pathToString(const std::filesystem::path& path)
+    {
+        if (path.empty())
+            return {};
+
+        const auto asUtf8 = path.generic_u8string();
+        return juce::String::fromUTF8(reinterpret_cast<const char*>(asUtf8.data()),
+                                      static_cast<int>(asUtf8.size()));
+    }
+
+    void logPluginLoadFailure(const PluginInfo& info, const juce::String& reason)
+    {
+        juce::String message("Plugin load failed");
+        message += " [" + juce::String(info.format == PluginFormat::VST3 ? "VST3" : "VST2") + "]";
+
+        if (! info.name.empty())
+            message += " " + juce::String(info.name);
+
+        if (! info.path.empty())
+            message += " (" + pathToString(info.path) + ")";
+
+        message += ": " + reason;
+        juce::Logger::writeToLog(message.trimEnd());
+    }
+
     [[nodiscard]] std::optional<std::filesystem::path> resolveVst3ModulePath(const std::filesystem::path& providedPath)
     {
         if (providedPath.empty())
@@ -232,34 +258,45 @@ namespace
             return std::nullopt;
 
         std::vector<std::filesystem::path> searchRoots;
-        searchRoots.push_back(providedPath);
+        auto addSearchRoot = [&](const std::filesystem::path& candidate)
+        {
+            if (candidate.empty())
+                return;
+
+            std::error_code existsEc;
+            if (! std::filesystem::exists(candidate, existsEc) || existsEc)
+                return;
+
+            if (! std::filesystem::is_directory(candidate, existsEc) || existsEc)
+                return;
+
+            if (std::find(searchRoots.begin(), searchRoots.end(), candidate) == searchRoots.end())
+                searchRoots.push_back(candidate);
+        };
+
+        addSearchRoot(providedPath);
+
+        const auto filenameLower = toLowerCopy(providedPath.filename().string());
+        if (filenameLower == "contents" || filenameLower == "resources" || filenameLower == "macos")
+        {
+            const auto parent = providedPath.parent_path();
+            addSearchRoot(parent);
+            const auto grandParent = parent.parent_path();
+            addSearchRoot(grandParent);
+        }
 
         const std::filesystem::path contentsPath = providedPath / "Contents";
-        if (std::filesystem::exists(contentsPath, ec) && ! ec && std::filesystem::is_directory(contentsPath, ec) && ! ec)
-        {
-            searchRoots.push_back(contentsPath);
+        addSearchRoot(contentsPath);
 
-            const std::array<std::string, 4> preferredDirs { "x86_64-win", "x86_64-linux", "MacOS", "Resources" };
-            for (const auto& name : preferredDirs)
-            {
-                const auto preferred = contentsPath / name;
-                if (std::filesystem::exists(preferred, ec) && ! ec && std::filesystem::is_directory(preferred, ec) && ! ec)
-                    searchRoots.push_back(preferred);
-            }
+        const std::array<std::string, 4> preferredDirs { "x86_64-win", "x86_64-linux", "MacOS", "Resources" };
+        for (const auto& name : preferredDirs)
+            addSearchRoot(contentsPath / name);
 
-            std::error_code dirEc;
-            for (std::filesystem::directory_iterator dirIt(contentsPath, std::filesystem::directory_options::skip_permission_denied, dirEc), end;
-                 ! dirEc && dirIt != end;
-                 ++dirIt)
-            {
-                if (! dirIt->is_directory())
-                    continue;
-
-                const auto& path = dirIt->path();
-                if (std::find(searchRoots.begin(), searchRoots.end(), path) == searchRoots.end())
-                    searchRoots.push_back(path);
-            }
-        }
+        std::error_code dirEc;
+        for (std::filesystem::directory_iterator dirIt(contentsPath, std::filesystem::directory_options::skip_permission_denied, dirEc), end;
+             ! dirEc && dirIt != end;
+             ++dirIt)
+            addSearchRoot(dirIt->path());
 
         for (const auto& root : searchRoots)
         {
@@ -301,9 +338,49 @@ namespace
         {
             unload();
 #if defined(_WIN32)
+            lastError.clear();
             handle = ::LoadLibraryW(p.wstring().c_str());
+            if (! handle)
+            {
+                const DWORD errorCode = ::GetLastError();
+                if (errorCode != 0)
+                {
+                    LPWSTR buffer = nullptr;
+                    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+                    const DWORD length = ::FormatMessageW(flags,
+                                                          nullptr,
+                                                          errorCode,
+                                                          0,
+                                                          reinterpret_cast<LPWSTR>(&buffer),
+                                                          0,
+                                                          nullptr);
+
+                    if (length > 0 && buffer != nullptr)
+                    {
+                        lastError = juce::String(buffer).trim();
+                        ::LocalFree(buffer);
+                    }
+                    else
+                    {
+                        lastError = juce::String("LoadLibrary failed with error ") + juce::String(static_cast<int>(errorCode));
+                    }
+                }
+                else
+                {
+                    lastError = "LoadLibrary failed";
+                }
+            }
 #else
+            lastError.clear();
+            ::dlerror();
             handle = ::dlopen(p.string().c_str(), RTLD_NOW);
+            if (! handle)
+            {
+                if (const char* err = ::dlerror())
+                    lastError = juce::String(err).trim();
+                else
+                    lastError = "dlopen failed";
+            }
 #endif
             return handle != nullptr;
         }
@@ -318,6 +395,7 @@ namespace
             ::dlclose(handle);
 #endif
             handle = {};
+            lastError.clear();
         }
 
         [[nodiscard]] void* getSymbol(const char* name) const
@@ -332,9 +410,11 @@ namespace
         }
 
         [[nodiscard]] bool isLoaded() const noexcept { return handle != nullptr; }
+        [[nodiscard]] const juce::String& getLastError() const noexcept { return lastError; }
 
     private:
         ModuleHandle handle {};
+        juce::String lastError;
     };
 
     class MemoryStream final : public Steinberg::IBStream
@@ -1625,36 +1705,45 @@ namespace
 
 std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
 {
-    auto modulePath = info.path;
-
-    if (modulePath.empty())
-        return nullptr;
-
-    std::error_code ec;
-    const bool isRegularFile = std::filesystem::is_regular_file(modulePath, ec);
-    if (ec)
-        return nullptr;
-
-    if ((! isRegularFile || ! isCandidateModuleFile(modulePath)) && info.format == PluginFormat::VST3)
+    if (info.path.empty())
     {
-        const auto resolved = resolveVst3ModulePath(modulePath);
-        if (! resolved.has_value())
-            return nullptr;
-        modulePath = *resolved;
+        logPluginLoadFailure(info, "Stored module path is empty");
+        return nullptr;
+    }
+
+    const auto resolvedModulePath = resolveVst3ModulePath(info.path);
+    if (! resolvedModulePath)
+    {
+        logPluginLoadFailure(info,
+                             "Unable to locate a VST3 module near " + pathToString(info.path));
+        return nullptr;
     }
 
     SharedLibrary module;
-    if (! module.load(modulePath))
+    if (! module.load(*resolvedModulePath))
+    {
+        juce::String reason = module.getLastError();
+        if (reason.isEmpty())
+            reason = "Module load failed";
+        logPluginLoadFailure(info,
+                             "Unable to load '" + pathToString(*resolvedModulePath) + "': " + reason);
         return nullptr;
+    }
 
     using GetFactoryProc = Steinberg::IPluginFactory*(*)();
     auto* symbol = module.getSymbol("GetPluginFactory");
     if (! symbol)
+    {
+        logPluginLoadFailure(info, "Module does not export GetPluginFactory");
         return nullptr;
+    }
 
-    auto factory = reinterpret_cast<GetFactoryProc>(symbol)();
+    auto* factory = reinterpret_cast<GetFactoryProc>(symbol)();
     if (! factory)
+    {
+        logPluginLoadFailure(info, "GetPluginFactory returned nullptr");
         return nullptr;
+    }
 
     Steinberg::FUID requestedClassId;
     const bool hasRequestedId = ! info.id.empty() && requestedClassId.fromString(info.id.c_str());
@@ -1688,46 +1777,73 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     bool controllerInitialized = false;
 
     bool componentInitialised = false;
+    juce::String selectedClassName;
+    juce::String lastFailureReason;
+    juce::String lastClassName;
+    bool sawSupportedCategory = false;
+    bool sawRequestedClass = false;
+    bool requestedClassFilteredByCategory = false;
     const auto count = factory->countClasses();
     for (Steinberg::int32 i = 0; i < count; ++i)
     {
         if (factory->getClassInfo(i, &classInfo) != Steinberg::kResultOk)
             continue;
 
-        if (! categorySupported(classInfo.category))
-            continue;
-
         Steinberg::FUID currentId(classInfo.cid);
-        if (hasRequestedId && !(currentId == requestedClassId))
+        const bool matchesRequestedId = hasRequestedId && (currentId == requestedClassId);
+        if (matchesRequestedId)
+            sawRequestedClass = true;
+
+        if (! categorySupported(classInfo.category))
+        {
+            if (matchesRequestedId)
+                requestedClassFilteredByCategory = true;
+            continue;
+        }
+
+        sawSupportedCategory = true;
+
+        if (hasRequestedId && ! matchesRequestedId)
             continue;
 
         controller = nullptr;
         component = nullptr;
         processor = nullptr;
 
+        juce::String className(classInfo.name);
         auto instantiateWithContext = [&](bool provideHostApplication) -> bool
         {
             Steinberg::Vst::IComponent* newComponent = nullptr;
-            if (factory->createInstance(classInfo.cid,
-                                        Steinberg::Vst::IComponent::iid,
-                                        reinterpret_cast<void**>(&newComponent)) != Steinberg::kResultOk
-                || newComponent == nullptr)
+            const auto createResult = factory->createInstance(classInfo.cid,
+                                                              Steinberg::Vst::IComponent::iid,
+                                                              reinterpret_cast<void**>(&newComponent));
+            if (createResult != Steinberg::kResultOk || newComponent == nullptr)
+            {
+                lastFailureReason = juce::String("createInstance failed (result ")
+                                    + juce::String(static_cast<int>(createResult)) + ")";
+                lastClassName = className;
                 return false;
+            }
 
             Steinberg::Vst::IAudioProcessor* newProcessor = nullptr;
-            if (newComponent->queryInterface(Steinberg::Vst::IAudioProcessor::iid,
-                                             reinterpret_cast<void**>(&newProcessor)) != Steinberg::kResultOk
-                || newProcessor == nullptr)
+            const auto processorResult = newComponent->queryInterface(Steinberg::Vst::IAudioProcessor::iid,
+                                                                      reinterpret_cast<void**>(&newProcessor));
+            if (processorResult != Steinberg::kResultOk || newProcessor == nullptr)
             {
+                lastFailureReason = "Component does not expose IAudioProcessor";
+                lastClassName = className;
                 newComponent->release();
                 return false;
             }
 
-            Steinberg::tresult initResult = newComponent->initialize(provideHostApplication && hostContext
-                                                                      ? hostContext.get()
-                                                                      : nullptr);
+            const auto initResult = newComponent->initialize(provideHostApplication && hostContext
+                                                                ? hostContext.get()
+                                                                : nullptr);
             if (initResult != Steinberg::kResultOk)
             {
+                lastFailureReason = juce::String("initialize failed (result ")
+                                    + juce::String(static_cast<int>(initResult)) + ")";
+                lastClassName = className;
                 newProcessor->release();
                 newComponent->release();
                 return false;
@@ -1763,6 +1879,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
                 controller = nullptr;
         }
 
+        selectedClassName = className;
         componentInitialised = true;
         break;
     }
@@ -1770,7 +1887,25 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     factory->release();
 
     if (! componentInitialised || ! component || ! processor)
+    {
+        juce::String failureMessage;
+        if (hasRequestedId && ! sawRequestedClass)
+            failureMessage = "Requested class id " + juce::String(info.id) + " was not reported by the module";
+        else if (hasRequestedId && requestedClassFilteredByCategory)
+            failureMessage = "Requested class id " + juce::String(info.id) + " is not an audio effect or instrument";
+        else if (! sawSupportedCategory)
+            failureMessage = "Factory reported no audio effect or instrument classes";
+        else if (lastFailureReason.isNotEmpty())
+        {
+            const juce::String name = lastClassName.isNotEmpty() ? lastClassName : juce::String("component");
+            failureMessage = "Failed to instantiate '" + name + "': " + lastFailureReason;
+        }
+        else
+            failureMessage = "No compatible classes could be instantiated";
+
+        logPluginLoadFailure(info, failureMessage);
         return nullptr;
+    }
 
     if (! controller && component)
     {
@@ -1793,9 +1928,13 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
 
     const auto inputBusCount = component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kInput);
     const auto outputBusCount = component->getBusCount(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput);
+    const juce::String classLabel = selectedClassName.isNotEmpty() ? ("'" + selectedClassName + "'")
+                                                                   : juce::String("component");
 
     if (outputBusCount <= 0)
     {
+        logPluginLoadFailure(info,
+                             "Component " + classLabel + " exposes no audio output buses");
         component->terminate();
         processor->release();
         component->release();
@@ -1813,6 +1952,8 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     {
         if (component->getBusInfo(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, inBus) != Steinberg::kResultOk)
         {
+            logPluginLoadFailure(info,
+                                 "Failed to query audio input bus info for " + classLabel);
             component->terminate();
             processor->release();
             component->release();
@@ -1832,8 +1973,13 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         }
     }
 
-    if (component->getBusInfo(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, outBus) != Steinberg::kResultOk || outBus.channelCount <= 0)
+    const auto outBusInfoResult = component->getBusInfo(Steinberg::Vst::kAudio, Steinberg::Vst::kOutput, 0, outBus);
+    if (outBusInfoResult != Steinberg::kResultOk || outBus.channelCount <= 0)
     {
+        const juce::String reason = outBusInfoResult != Steinberg::kResultOk
+                                        ? juce::String("Failed to query audio output bus info for ")
+                                        : juce::String("Audio output bus reports zero channels for ");
+        logPluginLoadFailure(info, reason + classLabel);
         component->terminate();
         processor->release();
         component->release();
@@ -1866,31 +2012,73 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
 
 std::unique_ptr<PluginInstance> loadVst2(const PluginInfo& info)
 {
+    if (info.path.empty())
+    {
+        logPluginLoadFailure(info, "Stored module path is empty");
+        return nullptr;
+    }
+
     SharedLibrary module;
     if (! module.load(info.path))
+    {
+        juce::String reason = module.getLastError();
+        if (reason.isEmpty())
+            reason = "Module load failed";
+        logPluginLoadFailure(info,
+                             "Unable to load '" + pathToString(info.path) + "': " + reason);
         return nullptr;
+    }
 
     using EntryProc = vst_effect_t* (VST_FUNCTION_INTERFACE*)(vst_host_callback_t);
     EntryProc entry = nullptr;
 
-    if (auto* sym = module.getSymbol("VSTPluginMain"))
-        entry = reinterpret_cast<EntryProc>(sym);
-    else if (auto* sym = module.getSymbol("main"))
-        entry = reinterpret_cast<EntryProc>(sym);
-    else if (auto* sym = module.getSymbol("main_macho"))
-        entry = reinterpret_cast<EntryProc>(sym);
+    constexpr std::array<const char*, 3> entryPoints { "VSTPluginMain", "main", "main_macho" };
+    for (const auto* name : entryPoints)
+    {
+        if (auto* sym = module.getSymbol(name))
+        {
+            entry = reinterpret_cast<EntryProc>(sym);
+            break;
+        }
+    }
 
     if (! entry)
+    {
+        juce::String names;
+        for (const auto* name : entryPoints)
+        {
+            if (names.isNotEmpty())
+                names += ", ";
+            names += name;
+        }
+
+        logPluginLoadFailure(info, "Could not locate entry point (" + names + ")");
         return nullptr;
+    }
 
     auto* effect = entry(&hostCallback);
-    if (! effect || effect->magic_number != kVstMagic)
+    if (! effect)
+    {
+        logPluginLoadFailure(info, "Entry point returned a null effect pointer");
         return nullptr;
+    }
+
+    if (effect->magic_number != kVstMagic)
+    {
+        logPluginLoadFailure(info, "Entry point returned invalid VST magic");
+        return nullptr;
+    }
 
     effect->control(effect, VST_EFFECT_OPCODE_CREATE, 0, 0, nullptr, 0.0f);
 
     if (effect->num_inputs != info.ins || effect->num_outputs != info.outs)
     {
+        juce::String message = "Channel configuration mismatch. Expected ";
+        message += juce::String(info.ins) + "/" + juce::String(info.outs);
+        message += ", got ";
+        message += juce::String(effect->num_inputs) + "/" + juce::String(effect->num_outputs);
+        logPluginLoadFailure(info, message);
+
         effect->control(effect, VST_EFFECT_OPCODE_DESTROY, 0, 0, nullptr, 0.0f);
         return nullptr;
     }
