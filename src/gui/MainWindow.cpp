@@ -40,8 +40,8 @@ namespace
         menuViewConsole
     };
 
-    constexpr int kPluginEditorMinWidth = 480;
-    constexpr int kPluginEditorMinHeight = 320;
+    constexpr int kPluginEditorMinWidth = 50;
+    constexpr int kPluginEditorMinHeight = 50;
     constexpr int kPluginEditorMaxWidth = 4096;
     constexpr int kPluginEditorMaxHeight = 3072;
     constexpr int kPluginSettingsMinWidth = 440;

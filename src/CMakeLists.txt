@@ -21,6 +21,7 @@ set(SOURCES
     ${SRC_DIR}/persist/Config.cpp
     ${SRC_DIR}/persist/Project.cpp
     ${SRC_DIR}/persist/Preset.cpp
+    ${VST3_SDK_DIR}/public.sdk/source/common/memorystream.cpp
 )
 
 juce_add_gui_app(VSTHostApp

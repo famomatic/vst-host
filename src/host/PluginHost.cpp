@@ -37,7 +37,9 @@
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
+#include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivsthostapplication.h>
+#include <pluginterfaces/vst/ivstpluginterfacesupport.h>
 #include <pluginterfaces/vst/ivstcontextmenu.h>
 #include <pluginterfaces/vst/ivstevents.h>
 #include <pluginterfaces/vst/ivstparameterchanges.h>
@@ -69,7 +71,8 @@ namespace host::plugin
 {
 namespace
 {
-    class SimpleHostApplication final : public Steinberg::Vst::IHostApplication
+    class SimpleHostApplication final : public Steinberg::Vst::IHostApplication,
+                                        public Steinberg::Vst::IPlugInterfaceSupport
     {
     public:
         SimpleHostApplication() = default;
@@ -83,6 +86,22 @@ namespace
             Steinberg::UString wrapper(name, 128);
             wrapper.fromAscii("VST Host");
             return Steinberg::kResultOk;
+        }
+
+        Steinberg::tresult PLUGIN_API isPlugInterfaceSupported(const Steinberg::TUID iid) override
+        {
+            if (Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IComponentHandler::iid)
+                || Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IComponentHandler2::iid)
+                || Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IComponentHandler3::iid)
+                || Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IMessage::iid)
+                || Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IAttributeList::iid)
+                || Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IHostApplication::iid)
+                || Steinberg::FUnknownPrivate::iidEqual(iid, Steinberg::Vst::IPlugInterfaceSupport::iid))
+            {
+                return Steinberg::kResultTrue;
+            }
+
+            return Steinberg::kResultFalse;
         }
 
         Steinberg::tresult PLUGIN_API createInstance(Steinberg::TUID, Steinberg::TUID iid, void** obj) override
@@ -123,6 +142,7 @@ namespace
 
             QUERY_INTERFACE(iid, obj, Steinberg::FUnknown::iid, Steinberg::Vst::IHostApplication)
             QUERY_INTERFACE(iid, obj, Steinberg::Vst::IHostApplication::iid, Steinberg::Vst::IHostApplication)
+            QUERY_INTERFACE(iid, obj, Steinberg::Vst::IPlugInterfaceSupport::iid, Steinberg::Vst::IPlugInterfaceSupport)
 
             *obj = nullptr;
             return Steinberg::kNoInterface;
@@ -1030,7 +1050,7 @@ namespace
             if (initialized || ! component)
                 return;
 
-            if (component->initialize(hostContext ? hostContext.get() : nullptr) == Steinberg::kResultOk)
+            if (component->initialize(hostContext ? static_cast<Steinberg::Vst::IHostApplication*>(hostContext.get()) : nullptr) == Steinberg::kResultOk)
             {
                 if (hasInputBus)
                     component->activateBus(Steinberg::Vst::kAudio, Steinberg::Vst::kInput, 0, true);
@@ -1150,6 +1170,7 @@ namespace
     {
         juce::Component::parentHierarchyChanged();
         attachIfPossible();
+        updateScaleFactor();
     }
 
     void Vst3EditorComponent::visibilityChanged()
@@ -1251,8 +1272,15 @@ namespace
         {
             const int initialWidth = rect.right - rect.left;
             const int initialHeight = rect.bottom - rect.top;
+            
+            juce::Logger::writeToLog("Vst3EditorComponent::adjustToInitialSize: Plugin reported size: " + juce::String(initialWidth) + "x" + juce::String(initialHeight));
+
             if (initialWidth > 0 && initialHeight > 0)
                 setSize(initialWidth, initialHeight);
+        }
+        else
+        {
+            juce::Logger::writeToLog("Vst3EditorComponent::adjustToInitialSize: view->getSize failed");
         }
     }
 
@@ -1896,19 +1924,26 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
 
         Steinberg::FUID currentId(classInfo.cid);
         const bool matchesRequestedId = hasRequestedId && (currentId == requestedClassId);
-        if (matchesRequestedId)
+        const bool matchesRequestedName = hasRequestedId && !matchesRequestedId && (juce::String(classInfo.name) == juce::String(info.name));
+
+        if (matchesRequestedId || matchesRequestedName)
             sawRequestedClass = true;
+
+        if (matchesRequestedName)
+        {
+             juce::Logger::writeToLog("Requested ID not found, but found class with matching name: " + juce::String(classInfo.name) + ". Using this class.");
+        }
 
         if (! categorySupported(classInfo.category))
         {
-            if (matchesRequestedId)
+            if (matchesRequestedId || matchesRequestedName)
                 requestedClassFilteredByCategory = true;
             continue;
         }
 
         sawSupportedCategory = true;
 
-        if (hasRequestedId && ! matchesRequestedId)
+        if (hasRequestedId && ! matchesRequestedId && ! matchesRequestedName)
             continue;
 
         controller = nullptr;
@@ -1942,7 +1977,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
             }
 
             const auto initResult = newComponent->initialize(provideHostApplication && hostContext
-                                                                ? hostContext.get()
+                                                                ? static_cast<Steinberg::Vst::IHostApplication*>(hostContext.get())
                                                                 : nullptr);
             if (initResult != Steinberg::kResultOk)
             {
@@ -1995,7 +2030,19 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     {
         juce::String failureMessage;
         if (hasRequestedId && ! sawRequestedClass)
-            failureMessage = "Requested class id " + juce::String(info.id) + " was not reported by the module";
+        {
+            failureMessage = "Requested class id " + juce::String(info.id) + " was not reported by the module. Available classes:";
+            for (Steinberg::int32 i = 0; i < count; ++i)
+            {
+                if (factory->getClassInfo(i, &classInfo) == Steinberg::kResultOk)
+                {
+                    Steinberg::FUID currentId(classInfo.cid);
+                    char uidString[33];
+                    currentId.toString(uidString);
+                    failureMessage += "\n  - " + juce::String(classInfo.name) + " (" + juce::String(uidString) + ")";
+                }
+            }
+        }
         else if (hasRequestedId && requestedClassFilteredByCategory)
             failureMessage = "Requested class id " + juce::String(info.id) + " is not an audio effect or instrument";
         else if (! sawSupportedCategory)
@@ -2021,7 +2068,7 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     if (controller)
     {
         controller->setComponentHandler(componentHandler);
-        if (controller->initialize(hostContext ? hostContext.get() : nullptr) != Steinberg::kResultOk)
+        if (controller->initialize(hostContext ? static_cast<Steinberg::Vst::IHostApplication*>(hostContext.get()) : nullptr) != Steinberg::kResultOk)
         {
             releaseController(false);
         }
