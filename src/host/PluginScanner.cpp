@@ -1,9 +1,16 @@
 #include "host/PluginScanner.h"
+#include "host/SharedLibrary.h"
+
+#include <pluginterfaces/base/ipluginbase.h>
+#include <pluginterfaces/base/funknown.h>
+#include <pluginterfaces/vst/ivstcomponent.h>
+#include <pluginterfaces/vst/ivstaudioprocessor.h>
 
 #include <thread>
 #include <vector>
 #include <array>
 #include <filesystem>
+#include <cstring>
 
 namespace host::plugin
 {
@@ -71,6 +78,62 @@ namespace host::plugin
         {
             auto ext = file.getFileExtension().toLowerCase();
             return ext == ".vst3" || ext == ".dll";
+        }
+
+        std::vector<PluginInfo> scanVst3Module(const juce::File& file)
+        {
+            std::vector<PluginInfo> results;
+            SharedLibrary lib;
+            if (! lib.load(std::filesystem::path(file.getFullPathName().toStdString())))
+            {
+                 // Log warning?
+                 return results;
+            }
+
+            using GetFactoryProc = Steinberg::IPluginFactory*(*)();
+            auto* symbol = lib.getSymbol("GetPluginFactory");
+            if (! symbol)
+                return results;
+
+            auto* factory = reinterpret_cast<GetFactoryProc>(symbol)();
+            if (! factory)
+                return results;
+
+            const auto count = factory->countClasses();
+            Steinberg::PClassInfo classInfo {};
+            
+            for (Steinberg::int32 i = 0; i < count; ++i)
+            {
+                if (factory->getClassInfo(i, &classInfo) != Steinberg::kResultOk)
+                    continue;
+
+                // Check category
+                bool isAudio = std::strcmp(classInfo.category, kVstAudioEffectClass) == 0;
+                bool isInstrument = std::strstr(classInfo.category, "Instrument") != nullptr;
+
+                if (! isAudio && ! isInstrument)
+                    continue;
+
+                PluginInfo info;
+                info.name = classInfo.name;
+                info.path = std::filesystem::path(file.getFullPathName().toStdString());
+                info.format = PluginFormat::VST3;
+                
+                Steinberg::FUID uid(classInfo.cid);
+                char uidString[33];
+                uid.toString(uidString);
+                info.id = uidString;
+                
+                // We could try to instantiate to get I/O count, but that might be slow/risky.
+                // For now, default to 2/2.
+                info.ins = 2;
+                info.outs = 2;
+                
+                results.push_back(std::move(info));
+            }
+
+            factory->release();
+            return results;
         }
     }
 
@@ -246,19 +309,28 @@ namespace host::plugin
                         continue;
 
                     juce::File modulePath = current.hasFileExtension(".vst3") ? resolveVst3Module(current) : current;
-
-                    PluginInfo info;
-                    info.path = modulePath.existsAsFile()
-                                    ? std::filesystem::path(modulePath.getFullPathName().toStdString())
-                                    : std::filesystem::path(current.getFullPathName().toStdString());
-                    info.name = current.getFileNameWithoutExtension().toStdString();
-                    info.id = modulePath.existsAsFile()
-                                  ? modulePath.getFullPathName().toStdString()
-                                  : current.getFullPathName().toStdString();
-                    info.format = current.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
-                    info.ins = 2;
-                    info.outs = 2;
-                    results.push_back(std::move(info));
+                    
+                    if (modulePath.hasFileExtension(".vst3"))
+                    {
+                        auto found = scanVst3Module(modulePath);
+                        results.insert(results.end(), std::make_move_iterator(found.begin()), std::make_move_iterator(found.end()));
+                    }
+                    else
+                    {
+                        // VST2 or other
+                        PluginInfo info;
+                        info.path = modulePath.existsAsFile()
+                                        ? std::filesystem::path(modulePath.getFullPathName().toStdString())
+                                        : std::filesystem::path(current.getFullPathName().toStdString());
+                        info.name = current.getFileNameWithoutExtension().toStdString();
+                        info.id = modulePath.existsAsFile()
+                                      ? modulePath.getFullPathName().toStdString()
+                                      : current.getFullPathName().toStdString();
+                        info.format = PluginFormat::VST2;
+                        info.ins = 2;
+                        info.outs = 2;
+                        results.push_back(std::move(info));
+                    }
                     continue;
                 }
 
@@ -274,19 +346,31 @@ namespace host::plugin
                         if (hasPluginExtension(candidate))
                         {
                             juce::File modulePath = resolveVst3Module(candidate);
-
-                            PluginInfo info;
-                            info.path = modulePath.existsAsFile()
-                                            ? std::filesystem::path(modulePath.getFullPathName().toStdString())
-                                            : std::filesystem::path(candidate.getFullPathName().toStdString());
-                            info.name = candidate.getFileNameWithoutExtension().toStdString();
-                            info.id = modulePath.existsAsFile()
-                                          ? modulePath.getFullPathName().toStdString()
-                                          : candidate.getFullPathName().toStdString();
-                            info.format = PluginFormat::VST3;
-                            info.ins = 2;
-                            info.outs = 2;
-                            results.push_back(std::move(info));
+                            
+                            if (modulePath.hasFileExtension(".vst3"))
+                            {
+                                auto found = scanVst3Module(modulePath);
+                                results.insert(results.end(), std::make_move_iterator(found.begin()), std::make_move_iterator(found.end()));
+                            }
+                            else
+                            {
+                                PluginInfo info;
+                                info.path = modulePath.existsAsFile()
+                                                ? std::filesystem::path(modulePath.getFullPathName().toStdString())
+                                                : std::filesystem::path(candidate.getFullPathName().toStdString());
+                                info.name = candidate.getFileNameWithoutExtension().toStdString();
+                                info.id = modulePath.existsAsFile()
+                                              ? modulePath.getFullPathName().toStdString()
+                                              : candidate.getFullPathName().toStdString();
+                                info.format = PluginFormat::VST3; // Wait, if it's a directory and not .vst3?
+                                // The original code assumed VST3 if it was a directory with plugin extension.
+                                // But hasPluginExtension checks .vst3 or .dll. .dll is not a directory.
+                                // So this must be .vst3 bundle.
+                                info.format = PluginFormat::VST3;
+                                info.ins = 2;
+                                info.outs = 2;
+                                results.push_back(std::move(info));
+                            }
                         }
                         else
                         {
@@ -300,18 +384,26 @@ namespace host::plugin
 
                     juce::File modulePath = candidate.hasFileExtension(".vst3") ? resolveVst3Module(candidate) : candidate;
 
-                    PluginInfo info;
-                    info.path = modulePath.existsAsFile()
-                                    ? std::filesystem::path(modulePath.getFullPathName().toStdString())
-                                    : std::filesystem::path(candidate.getFullPathName().toStdString());
-                    info.name = candidate.getFileNameWithoutExtension().toStdString();
-                    info.id = modulePath.existsAsFile()
-                                  ? modulePath.getFullPathName().toStdString()
-                                  : candidate.getFullPathName().toStdString();
-                    info.format = candidate.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
-                    info.ins = 2;
-                    info.outs = 2;
-                    results.push_back(std::move(info));
+                    if (modulePath.hasFileExtension(".vst3"))
+                    {
+                        auto found = scanVst3Module(modulePath);
+                        results.insert(results.end(), std::make_move_iterator(found.begin()), std::make_move_iterator(found.end()));
+                    }
+                    else
+                    {
+                         PluginInfo info;
+                        info.path = modulePath.existsAsFile()
+                                        ? std::filesystem::path(modulePath.getFullPathName().toStdString())
+                                        : std::filesystem::path(candidate.getFullPathName().toStdString());
+                        info.name = candidate.getFileNameWithoutExtension().toStdString();
+                        info.id = modulePath.existsAsFile()
+                                      ? modulePath.getFullPathName().toStdString()
+                                      : candidate.getFullPathName().toStdString();
+                        info.format = candidate.hasFileExtension(".dll") ? PluginFormat::VST2 : PluginFormat::VST3;
+                        info.ins = 2;
+                        info.outs = 2;
+                        results.push_back(std::move(info));
+                    }
                 }
             }
         }

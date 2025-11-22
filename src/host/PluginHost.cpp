@@ -1,4 +1,5 @@
 #include "host/PluginHost.h"
+#include "host/SharedLibrary.h"
 
 #include <algorithm>
 #include <array>
@@ -236,11 +237,7 @@ namespace
     constexpr int32_t kTimeInfoFlagTempoValid = 1 << 10;
     constexpr int32_t kTimeInfoFlagTimeSigValid = 1 << 13;
 
-#if defined(_WIN32)
-    using ModuleHandle = HMODULE;
-#else
-    using ModuleHandle = void*;
-#endif
+
 
     [[nodiscard]] std::string toLowerCopy(std::string input)
     {
@@ -382,115 +379,7 @@ namespace
         return std::nullopt;
     }
 
-    class SharedLibrary
-    {
-    public:
-        SharedLibrary() = default;
-        explicit SharedLibrary(const std::filesystem::path& p) { load(p); }
-        ~SharedLibrary() { unload(); }
 
-        SharedLibrary(const SharedLibrary&) = delete;
-        SharedLibrary& operator=(const SharedLibrary&) = delete;
-
-        SharedLibrary(SharedLibrary&& other) noexcept
-            : handle(other.handle)
-        {
-            other.handle = {};
-        }
-
-        SharedLibrary& operator=(SharedLibrary&& other) noexcept
-        {
-            if (this != &other)
-            {
-                unload();
-                handle = other.handle;
-                other.handle = {};
-            }
-            return *this;
-        }
-
-        bool load(const std::filesystem::path& p)
-        {
-            unload();
-#if defined(_WIN32)
-            lastError.clear();
-            handle = ::LoadLibraryW(p.wstring().c_str());
-            if (! handle)
-            {
-                const DWORD errorCode = ::GetLastError();
-                if (errorCode != 0)
-                {
-                    LPWSTR buffer = nullptr;
-                    const DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
-                    const DWORD length = ::FormatMessageW(flags,
-                                                          nullptr,
-                                                          errorCode,
-                                                          0,
-                                                          reinterpret_cast<LPWSTR>(&buffer),
-                                                          0,
-                                                          nullptr);
-
-                    if (length > 0 && buffer != nullptr)
-                    {
-                        lastError = juce::String(buffer).trim();
-                        ::LocalFree(buffer);
-                    }
-                    else
-                    {
-                        lastError = juce::String("LoadLibrary failed with error ") + juce::String(static_cast<int>(errorCode));
-                    }
-                }
-                else
-                {
-                    lastError = "LoadLibrary failed";
-                }
-            }
-#else
-            lastError.clear();
-            ::dlerror();
-            handle = ::dlopen(p.string().c_str(), RTLD_NOW);
-            if (! handle)
-            {
-                if (const char* err = ::dlerror())
-                    lastError = juce::String(err).trim();
-                else
-                    lastError = "dlopen failed";
-            }
-#endif
-            return handle != nullptr;
-        }
-
-        void unload()
-        {
-            if (! handle)
-                return;
-#if defined(_WIN32)
-            ::FreeLibrary(handle);
-#else
-            ::dlclose(handle);
-#endif
-            handle = {};
-            lastError.clear();
-        }
-
-        [[nodiscard]] void* getSymbol(const char* name) const
-        {
-            if (! handle)
-                return nullptr;
-#if defined(_WIN32)
-            return reinterpret_cast<void*>(::GetProcAddress(handle, name));
-#else
-            return ::dlsym(handle, name);
-#endif
-        }
-
-        [[nodiscard]] bool isLoaded() const noexcept { return handle != nullptr; }
-        [[nodiscard]] const juce::String& getLastError() const noexcept { return lastError; }
-
-    private:
-        ModuleHandle handle {};
-        juce::String lastError;
-    };
 
     class MemoryStream final : public Steinberg::IBStream
     {
@@ -1268,20 +1157,33 @@ namespace
             return;
 
         Steinberg::ViewRect rect {};
-        if (view->getSize(&rect) == Steinberg::kResultOk)
-        {
-            const int initialWidth = rect.right - rect.left;
-            const int initialHeight = rect.bottom - rect.top;
-            
-            juce::Logger::writeToLog("Vst3EditorComponent::adjustToInitialSize: Plugin reported size: " + juce::String(initialWidth) + "x" + juce::String(initialHeight));
+        bool sizeRetrieved = (view->getSize(&rect) == Steinberg::kResultOk);
+        int width = rect.right - rect.left;
+        int height = rect.bottom - rect.top;
 
-            if (initialWidth > 0 && initialHeight > 0)
-                setSize(initialWidth, initialHeight);
+        if (sizeRetrieved)
+        {
+             juce::Logger::writeToLog("Vst3EditorComponent::adjustToInitialSize: Plugin reported size: " + juce::String(width) + "x" + juce::String(height));
         }
         else
         {
-            juce::Logger::writeToLog("Vst3EditorComponent::adjustToInitialSize: view->getSize failed");
+             juce::Logger::writeToLog("Vst3EditorComponent::adjustToInitialSize: view->getSize failed");
         }
+
+        if (width <= 0 || height <= 0)
+        {
+            // Fallback size if plugin doesn't report one or reports invalid size
+            width = 800;
+            height = 600;
+            juce::Logger::writeToLog("Vst3EditorComponent::adjustToInitialSize: Using fallback size 800x600");
+        }
+
+        setSize(width, height);
+        
+        // Explicitly notify the view of the size, in case setSize didn't trigger a change (e.g. if it was already that size)
+        // or if the view needs an explicit onSize call to show up.
+        Steinberg::ViewRect finalRect { 0, 0, width, height };
+        view->onSize(&finalRect);
     }
 
     void Vst3EditorComponent::attachIfPossible()
