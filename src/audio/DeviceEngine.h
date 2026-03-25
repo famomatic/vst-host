@@ -3,6 +3,7 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 
 #include <atomic>
+#include <mutex>
 #include <memory>
 #include <vector>
 
@@ -34,10 +35,10 @@ namespace host::audio
         void setGraph(std::shared_ptr<host::graph::GraphEngine> graphEngine);
 
         void setEngineConfig(const EngineConfig& cfg);
-        [[nodiscard]] EngineConfig getEngineConfig() const noexcept { return engineConfig; }
+        [[nodiscard]] EngineConfig getEngineConfig() const;
 
         void setDeviceInfo(const DeviceInfo& info);
-        [[nodiscard]] DeviceInfo getDeviceInfo() const noexcept { return deviceInfo; }
+        [[nodiscard]] DeviceInfo getDeviceInfo() const;
 
         void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
                                               int numInputChannels,
@@ -50,22 +51,18 @@ namespace host::audio
         void audioDeviceStopped() override;
 
     private:
-        void prepareResamplers();
-        void prepareScratchBuffers(int numChannels);
+        struct ProcessingState;
+
+        [[nodiscard]] std::shared_ptr<ProcessingState> buildProcessingState(const EngineConfig& cfg,
+                                                                            const DeviceInfo& info) const;
+        void rebuildProcessingState(const EngineConfig& cfg, const DeviceInfo& info);
         void clearOutputs(float* const* outputChannelData, int numOutputChannels, int numSamples);
 
         std::atomic<std::shared_ptr<host::graph::GraphEngine>> graphEngine;
+        mutable std::mutex configMutex_;
         EngineConfig engineConfig;
         DeviceInfo deviceInfo;
 
-        juce::AudioBuffer<float> engineBuffer;
-
-        BlockResampler inputResampler;
-        BlockResampler outputResampler;
-
-        std::vector<const float*> inputPointerScratch;
-        std::vector<float*> outputPointerScratch;
-        std::vector<float*> engineWritePointers;
-        std::vector<const float*> engineReadPointers;
+        std::atomic<std::shared_ptr<ProcessingState>> processingState_;
     };
 }

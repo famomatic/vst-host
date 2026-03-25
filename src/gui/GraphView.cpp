@@ -235,7 +235,7 @@ public:
     void mouseDoubleClick(const juce::MouseEvent& event) override
     {
         if (event.mods.isLeftButtonDown())
-            owner.openNodeSettings(nodeId);
+            static_cast<void>(owner.openNodeSettings(nodeId));
     }
 
 private:
@@ -344,15 +344,6 @@ void GraphView::syncNodes(bool preservePositions)
         return;
     }
 
-    try
-    {
-        graph->prepare();
-    }
-    catch (const std::exception& e)
-    {
-        juce::Logger::writeToLog("Graph prepare failed: " + juce::String(e.what()));
-    }
-
     auto nodeIds = graph->getNodeIds();
     std::unordered_set<std::string> seen;
     seen.reserve(nodeIds.size());
@@ -366,7 +357,7 @@ void GraphView::syncNodes(bool preservePositions)
         const auto key = id.toString().toStdString();
         seen.insert(key);
 
-        auto* node = graph->getNode(id);
+        auto node = graph->getNode(id);
         juce::String displayName = node != nullptr ? juce::String(node->name()) : tr("graph.node.default");
 
         NodeComponent::Role role = NodeComponent::Role::General;
@@ -389,12 +380,12 @@ void GraphView::syncNodes(bool preservePositions)
             outputs = 0;
         }
 
-        if (auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node))
+        if (auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get()))
         {
             if (auto info = vstNode->pluginInfo())
             {
-                inputs = info->ins;
-                outputs = info->outs;
+                inputs = info->ins > 0 ? info->ins : 2;
+                outputs = info->outs > 0 ? info->outs : 2;
             }
             role = NodeComponent::Role::Plugin;
         }
@@ -754,7 +745,7 @@ void GraphView::showNodeContextMenu(NodeId id, juce::Point<int> screenPosition)
                            {
                                case openSettingsId:
                                {
-                                   openNodeSettings(id);
+                                   static_cast<void>(openNodeSettings(id));
                                    break;
                                }
                                case clearOutgoingId: clearConnectionsFrom(id); break;
@@ -971,8 +962,8 @@ bool GraphView::nodeSupportsSettings(NodeId id) const
     if (id.isNull() || ! graph)
         return false;
 
-    if (auto* node = graph->getNode(id))
-        return dynamic_cast<host::graph::nodes::VstFxNode*>(node) != nullptr;
+    if (auto node = graph->getNode(id))
+        return dynamic_cast<host::graph::nodes::VstFxNode*>(node.get()) != nullptr;
 
     return false;
 }

@@ -663,8 +663,8 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
     if (id.isNull() || ! graphEngine)
         return;
 
-    auto* node = graphEngine->getNode(id);
-    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node);
+    auto node = graphEngine->getNode(id);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
     if (vstNode == nullptr)
         return;
 

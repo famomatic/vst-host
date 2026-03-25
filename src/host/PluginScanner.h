@@ -5,6 +5,8 @@
 #include <juce_core/juce_core.h>
 #include <juce_events/juce_events.h>
 #include <atomic>
+#include <mutex>
+#include <thread>
 
 namespace host::plugin
 {
@@ -12,6 +14,7 @@ namespace host::plugin
     {
     public:
         PluginScanner();
+        ~PluginScanner() override;
 
         void addSearchPath(const juce::File& path);
         void removeSearchPath(const juce::File& path);
@@ -28,12 +31,16 @@ namespace host::plugin
 
     private:
         void runScan();
+        void joinWorkerIfRunning();
 
         juce::Array<juce::File> searchPaths;
         std::vector<PluginInfo> discovered;
         juce::CriticalSection stateLock;
+        std::mutex workerMutex;
         juce::String lastError;
         juce::File cacheLocation;
         std::atomic<bool> scanning { false };
+        std::atomic<bool> cancelRequested { false };
+        std::thread workerThread;
     };
 }

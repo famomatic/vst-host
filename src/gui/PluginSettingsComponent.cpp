@@ -159,8 +159,8 @@ void PluginSettingsComponent::updateContent()
         return;
     }
 
-    auto* node = graphPtr->getNode(targetId);
-    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node);
+    auto node = graphPtr->getNode(targetId);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
     if (! vstNode)
     {
         nameEditor.setEnabled(false);
@@ -201,8 +201,12 @@ void PluginSettingsComponent::updateContent()
         pathValue.setText(formatPathText(info->path), juce::dontSendNotification);
         pathValue.setTooltip(pathValue.getText());
 
-        inputsValue.setText(juce::String(info->ins), juce::dontSendNotification);
-        outputsValue.setText(juce::String(info->outs), juce::dontSendNotification);
+        inputsValue.setText(info->ins > 0 ? juce::String(info->ins)
+                                          : tr("plugin.settings.notAvailable"),
+                            juce::dontSendNotification);
+        outputsValue.setText(info->outs > 0 ? juce::String(info->outs)
+                                            : tr("plugin.settings.notAvailable"),
+                             juce::dontSendNotification);
     }
     else
     {
@@ -220,8 +224,8 @@ void PluginSettingsComponent::commitNameChange()
     if (! graphPtr)
         return;
 
-    auto* node = graphPtr->getNode(targetId);
-    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node);
+    auto node = graphPtr->getNode(targetId);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
     if (! vstNode)
         return;
 
@@ -254,8 +258,8 @@ void PluginSettingsComponent::applyBypassState()
     if (! graphPtr)
         return;
 
-    auto* node = graphPtr->getNode(targetId);
-    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node);
+    auto node = graphPtr->getNode(targetId);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
     if (! vstNode)
         return;
 
@@ -272,8 +276,8 @@ void PluginSettingsComponent::openEditor()
     if (! graphPtr)
         return;
 
-    auto* node = graphPtr->getNode(targetId);
-    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node);
+    auto node = graphPtr->getNode(targetId);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
     if (! vstNode)
         return;
 
