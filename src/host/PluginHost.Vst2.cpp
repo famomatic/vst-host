@@ -524,7 +524,7 @@ namespace
             return VST_STATUS_FALSE;
         case VST_HOST_OPCODE_GET_TIME:
         {
-            static HostTimeInfo timeInfo {};
+            thread_local HostTimeInfo timeInfo {};
             timeInfo.samplePos = 0.0;
             timeInfo.sampleRate = instance != nullptr ? instance->currentSampleRate() : 44100.0;
             timeInfo.nanoSeconds = 0.0;

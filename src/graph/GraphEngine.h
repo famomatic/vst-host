@@ -5,6 +5,7 @@
 #include <juce_core/juce_core.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -33,7 +34,7 @@ public:
 
     NodeId addNode(std::unique_ptr<Node> node);
     NodeId addNodeWithId(const NodeId& id, std::unique_ptr<Node> node);
-    [[nodiscard]] Node* getNode(const NodeId& id) const;
+    [[nodiscard]] std::shared_ptr<Node> getNode(const NodeId& id) const;
     void removeNode(NodeId id);
 
     void setIO(NodeId inputNode, NodeId outputNode);
@@ -51,9 +52,21 @@ public:
     [[nodiscard]] NodeId getOutputNode() const;
 
 private:
+    struct RuntimeNode
+    {
+        NodeId id;
+        std::shared_ptr<Node> node;
+        std::vector<size_t> inputIndices;
+        juce::AudioBuffer<float> buffer;
+        bool receivesHostInput = false;
+    };
+
     struct RuntimeState
     {
-        std::vector<Node*> scheduleNodes;
+        std::vector<RuntimeNode> nodes;
+        std::unordered_map<std::string, size_t> indexByNodeId;
+        size_t outputNodeIndex = 0;
+        bool hasOutputNode = false;
         double sampleRate = 0.0;
         int blockSize = 0;
     };
@@ -61,12 +74,12 @@ private:
     struct NodeEntry
     {
         NodeId id;
-        std::unique_ptr<Node> node;
+        std::shared_ptr<Node> node;
         std::vector<NodeId> outputs;
     };
 
     [[nodiscard]] static std::string toKey(const NodeId& id);
-    [[nodiscard]] Node* getNodeUnlocked(const NodeId& id) const;
+    [[nodiscard]] std::shared_ptr<Node> getNodeUnlocked(const NodeId& id) const;
     [[nodiscard]] bool hasNodeUnlocked(const NodeId& id) const;
     NodeId addNodeUnlocked(std::unique_ptr<Node> node, std::optional<NodeId> requestedId);
     void invalidateRuntimeUnlocked();
@@ -88,6 +101,8 @@ private:
 
     std::atomic<bool> processingSuspended_ { false };
     std::atomic<int> inFlightProcessCallbacks_ { 0 };
-    std::atomic<std::shared_ptr<const RuntimeState>> runtimeState_ { nullptr };
+    mutable std::mutex inFlightCallbackMutex_;
+    mutable std::condition_variable inFlightCallbackCv_;
+    std::atomic<std::shared_ptr<RuntimeState>> runtimeState_ { nullptr };
 };
 } // namespace host::graph

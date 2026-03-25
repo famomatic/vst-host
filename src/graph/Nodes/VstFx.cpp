@@ -30,13 +30,6 @@ namespace host::graph::nodes
         if (! instance_ || bypassed_.load())
             return;
 
-        if (preparedSampleRate_ != ctx.sampleRate || preparedBlockSize_ != ctx.blockSize)
-        {
-            preparedSampleRate_ = ctx.sampleRate;
-            preparedBlockSize_ = ctx.blockSize;
-            instance_->prepare(preparedSampleRate_, preparedBlockSize_);
-        }
-
         instance_->process(ctx.inputChannels,
                            ctx.numInputChannels,
                            ctx.outputChannels,

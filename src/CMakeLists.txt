@@ -72,6 +72,6 @@ target_compile_definitions(VSTHostApp PRIVATE
 )
 
 if (MSVC)
-    target_compile_options(VSTHostApp PRIVATE /permissive- /Zc:__cplusplus /EHsc)
+    target_compile_options(VSTHostApp PRIVATE /permissive- /Zc:__cplusplus /EHsc /FS)
     target_compile_options(VSTHostApp PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/DNDEBUG>)
 endif()

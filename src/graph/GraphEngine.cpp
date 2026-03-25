@@ -4,7 +4,6 @@
 #include <array>
 #include <queue>
 #include <stdexcept>
-#include <thread>
 
 namespace host::graph
 {
@@ -13,21 +12,6 @@ namespace
 constexpr double defaultSampleRate = 48000.0;
 constexpr int defaultBlockSize = 256;
 constexpr int maxProcessChannels = 64;
-
-struct ProcessCallbackGuard
-{
-    explicit ProcessCallbackGuard(std::atomic<int>& counterIn) : counter(counterIn)
-    {
-        counter.fetch_add(1, std::memory_order_acq_rel);
-    }
-
-    ~ProcessCallbackGuard()
-    {
-        counter.fetch_sub(1, std::memory_order_acq_rel);
-    }
-
-    std::atomic<int>& counter;
-};
 } // namespace
 
 std::string GraphEngine::toKey(const NodeId& id)
@@ -37,8 +21,11 @@ std::string GraphEngine::toKey(const NodeId& id)
 
 void GraphEngine::waitForInFlightCallbacks() const
 {
-    while (inFlightProcessCallbacks_.load(std::memory_order_acquire) > 0)
-        std::this_thread::yield();
+    std::unique_lock<std::mutex> lock(inFlightCallbackMutex_);
+    inFlightCallbackCv_.wait(lock, [this]
+    {
+        return inFlightProcessCallbacks_.load(std::memory_order_acquire) == 0;
+    });
 }
 
 void GraphEngine::suspendProcessingAndDrainUnlocked()
@@ -117,7 +104,7 @@ GraphEngine::NodeId GraphEngine::addNodeUnlocked(std::unique_ptr<Node> node, std
 
     NodeEntry entry;
     entry.id = id;
-    entry.node = std::move(node);
+    entry.node = std::shared_ptr<Node>(std::move(node));
 
     indexById_[key] = nodes_.size();
     nodes_.push_back(std::move(entry));
@@ -126,7 +113,7 @@ GraphEngine::NodeId GraphEngine::addNodeUnlocked(std::unique_ptr<Node> node, std
     return id;
 }
 
-Node* GraphEngine::getNode(const NodeId& id) const
+std::shared_ptr<Node> GraphEngine::getNode(const NodeId& id) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     return getNodeUnlocked(id);
@@ -269,19 +256,69 @@ void GraphEngine::prepare()
 
         for (const auto& id : schedule_)
         {
-            if (auto* node = getNodeUnlocked(id))
+            auto node = getNodeUnlocked(id);
+            if (node)
                 node->prepare(sampleRate_, blockSize_);
         }
 
         auto runtime = std::make_shared<RuntimeState>();
         runtime->sampleRate = sampleRate_;
         runtime->blockSize = blockSize_;
-        runtime->scheduleNodes.reserve(schedule_.size());
+        runtime->nodes.reserve(schedule_.size());
+        runtime->indexByNodeId.reserve(schedule_.size());
 
         for (const auto& id : schedule_)
         {
-            if (auto* node = getNodeUnlocked(id))
-                runtime->scheduleNodes.push_back(node);
+            auto node = getNodeUnlocked(id);
+            if (! node)
+                continue;
+
+            RuntimeNode runtimeNode;
+            runtimeNode.id = id;
+            runtimeNode.node = std::move(node);
+            runtimeNode.receivesHostInput = (! inputNode_.isNull() && id == inputNode_);
+            runtimeNode.buffer.setSize(maxProcessChannels, std::max(1, blockSize_), false, false, true);
+            runtimeNode.buffer.clear();
+
+            const auto runtimeIndex = runtime->nodes.size();
+            runtime->indexByNodeId[toKey(id)] = runtimeIndex;
+            runtime->nodes.push_back(std::move(runtimeNode));
+        }
+
+        for (const auto& entry : nodes_)
+        {
+            const auto targetRuntimeIt = runtime->indexByNodeId.find(toKey(entry.id));
+            if (targetRuntimeIt == runtime->indexByNodeId.end())
+                continue;
+
+            auto& targetRuntimeNode = runtime->nodes[targetRuntimeIt->second];
+            for (const auto& sourceEntry : nodes_)
+            {
+                const auto hasEdge = std::any_of(sourceEntry.outputs.begin(), sourceEntry.outputs.end(),
+                                                 [&entry](const NodeId& target) { return target == entry.id; });
+                if (! hasEdge)
+                    continue;
+
+                const auto sourceRuntimeIt = runtime->indexByNodeId.find(toKey(sourceEntry.id));
+                if (sourceRuntimeIt != runtime->indexByNodeId.end())
+                    targetRuntimeNode.inputIndices.push_back(sourceRuntimeIt->second);
+            }
+        }
+
+        if (! outputNode_.isNull())
+        {
+            const auto outputRuntimeIt = runtime->indexByNodeId.find(toKey(outputNode_));
+            if (outputRuntimeIt != runtime->indexByNodeId.end())
+            {
+                runtime->hasOutputNode = true;
+                runtime->outputNodeIndex = outputRuntimeIt->second;
+            }
+        }
+
+        if (! runtime->hasOutputNode && ! runtime->nodes.empty())
+        {
+            runtime->hasOutputNode = true;
+            runtime->outputNodeIndex = runtime->nodes.size() - 1;
         }
 
         runtimeState_.store(std::move(runtime), std::memory_order_release);
@@ -303,7 +340,33 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
         return 0;
     }
 
-    ProcessCallbackGuard inFlight(inFlightProcessCallbacks_);
+    const int previousCallbacks = inFlightProcessCallbacks_.fetch_add(1, std::memory_order_acq_rel);
+    const auto releaseInFlightCallback = [this]()
+    {
+        const int previous = inFlightProcessCallbacks_.fetch_sub(1, std::memory_order_acq_rel);
+        if (previous <= 1)
+            inFlightCallbackCv_.notify_all();
+    };
+    struct InFlightScopeExit
+    {
+        explicit InFlightScopeExit(const decltype(releaseInFlightCallback)& fnIn)
+            : fn(fnIn)
+        {
+        }
+
+        ~InFlightScopeExit()
+        {
+            fn();
+        }
+
+        const decltype(releaseInFlightCallback)& fn;
+    } inFlightScopeExit(releaseInFlightCallback);
+
+    if (previousCallbacks > 0)
+    {
+        buffer.clear();
+        return 0;
+    }
 
     if (processingSuspended_.load(std::memory_order_acquire))
     {
@@ -312,7 +375,7 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
     }
 
     auto runtime = runtimeState_.load(std::memory_order_acquire);
-    if (! runtime || runtime->scheduleNodes.empty())
+    if (! runtime || runtime->nodes.empty() || ! runtime->hasOutputNode)
     {
         buffer.clear();
         return 0;
@@ -329,25 +392,80 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
         return 0;
     }
 
-    std::array<float*, static_cast<size_t>(maxProcessChannels)> channelPointers {};
-    for (int ch = 0; ch < numChannels; ++ch)
-        channelPointers[static_cast<size_t>(ch)] = buffer.getWritePointer(ch);
-
-    ProcessContext context {
-        buffer,
-        channelPointers.data(),
-        channelPointers.data(),
-        numChannels,
-        numChannels,
-        runtime->sampleRate,
-        runtime->blockSize,
-        numSamples
-    };
-
-    for (auto* node : runtime->scheduleNodes)
+    if (numSamples > runtime->blockSize)
     {
-        if (node != nullptr)
-            node->process(context);
+        buffer.clear();
+        return 0;
+    }
+
+    std::array<float*, static_cast<size_t>(maxProcessChannels)> inPointers {};
+    std::array<float*, static_cast<size_t>(maxProcessChannels)> outPointers {};
+
+    for (auto& runtimeNode : runtime->nodes)
+    {
+        runtimeNode.buffer.clear();
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            auto* destination = runtimeNode.buffer.getWritePointer(ch);
+            if (destination == nullptr)
+                continue;
+
+            if (runtimeNode.inputIndices.empty())
+            {
+                if (runtimeNode.receivesHostInput)
+                {
+                    const auto* source = buffer.getReadPointer(ch);
+                    juce::FloatVectorOperations::copy(destination, source, numSamples);
+                }
+            }
+            else
+            {
+                for (const auto sourceIndex : runtimeNode.inputIndices)
+                {
+                    if (sourceIndex >= runtime->nodes.size())
+                        continue;
+
+                    const auto* source = runtime->nodes[sourceIndex].buffer.getReadPointer(ch);
+                    if (source != nullptr)
+                        juce::FloatVectorOperations::add(destination, source, numSamples);
+                }
+            }
+
+            inPointers[static_cast<size_t>(ch)] = runtimeNode.buffer.getWritePointer(ch);
+            outPointers[static_cast<size_t>(ch)] = runtimeNode.buffer.getWritePointer(ch);
+        }
+
+        ProcessContext context {
+            runtimeNode.buffer,
+            inPointers.data(),
+            outPointers.data(),
+            numChannels,
+            numChannels,
+            runtime->sampleRate,
+            runtime->blockSize,
+            numSamples
+        };
+
+        if (runtimeNode.node != nullptr)
+            runtimeNode.node->process(context);
+    }
+
+    if (runtime->outputNodeIndex >= runtime->nodes.size())
+    {
+        buffer.clear();
+        return 0;
+    }
+
+    const auto& outputBuffer = runtime->nodes[runtime->outputNodeIndex].buffer;
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        auto* dest = buffer.getWritePointer(ch);
+        const auto* src = outputBuffer.getReadPointer(ch);
+        if (dest == nullptr || src == nullptr)
+            continue;
+
+        juce::FloatVectorOperations::copy(dest, src, numSamples);
     }
 
     return buffer.getNumSamples();
@@ -393,18 +511,18 @@ GraphEngine::NodeId GraphEngine::getOutputNode() const
     return outputNode_;
 }
 
-Node* GraphEngine::getNodeUnlocked(const NodeId& id) const
+std::shared_ptr<Node> GraphEngine::getNodeUnlocked(const NodeId& id) const
 {
     const auto key = toKey(id);
     const auto it = indexById_.find(key);
     if (it == indexById_.end())
-        return nullptr;
+        return {};
 
     const auto idx = it->second;
     if (idx >= nodes_.size())
-        return nullptr;
+        return {};
 
-    return nodes_[idx].node.get();
+    return nodes_[idx].node;
 }
 
 bool GraphEngine::hasNodeUnlocked(const NodeId& id) const

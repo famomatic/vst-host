@@ -141,7 +141,8 @@ namespace
                         definition.pluginFormat = readString(nodeObj->getProperty("pluginFormat"));
                         definition.inputs = readInt(nodeObj->getProperty("inputs"));
                         definition.outputs = readInt(nodeObj->getProperty("outputs"));
-                        definition.latency = readInt(nodeObj->getProperty("latency"));
+                        definition.latency = readInt(nodeObj->getProperty("latency"),
+                                                     readInt(nodeObj->getProperty("pluginLatency")));
                         const auto stateVar = nodeObj->getProperty("pluginState");
                         if (stateVar.isString())
                         {
@@ -201,9 +202,9 @@ namespace
         root->setProperty("version", 1);
 
         juce::Array<juce::var> nodeArray;
-        for (auto& id : graph.getSchedule())
+        for (const auto& id : graph.getNodeIds())
         {
-            if (auto* node = graph.getNode(id))
+            if (auto node = graph.getNode(id))
             {
                 juce::DynamicObject::Ptr nodeObj(new juce::DynamicObject());
                 nodeObj->setProperty("id", id.toString());
@@ -211,7 +212,7 @@ namespace
                 nodeObj->setProperty("type", nodeTypeFromInstance(*node));
                 nodeObj->setProperty("latency", node->latencySamples());
 
-                if (const auto* vstNode = dynamic_cast<const host::graph::nodes::VstFxNode*>(node))
+                if (const auto* vstNode = dynamic_cast<const host::graph::nodes::VstFxNode*>(node.get()))
                 {
                     if (const auto& info = vstNode->pluginInfo())
                     {
