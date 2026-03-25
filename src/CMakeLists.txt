@@ -4,7 +4,9 @@ set(SOURCES
     ${SRC_DIR}/AppMain.cpp
     ${SRC_DIR}/audio/DeviceEngine.cpp
     ${SRC_DIR}/audio/Resampler.cpp
-    ${SRC_DIR}/host/PluginHost.cpp
+    ${SRC_DIR}/host/PluginHost.Vst3.cpp
+    ${SRC_DIR}/host/PluginHost.Vst3Editor.cpp
+    ${SRC_DIR}/host/PluginHost.Vst2.cpp
     ${SRC_DIR}/host/PluginScanner.cpp
     ${SRC_DIR}/graph/GraphEngine.cpp
     ${SRC_DIR}/graph/Nodes/VstFx.cpp
@@ -12,6 +14,7 @@ set(SOURCES
     ${SRC_DIR}/gui/ConsoleView.cpp
     ${SRC_DIR}/gui/ConsoleWindow.cpp
     ${SRC_DIR}/gui/MainWindow.cpp
+    ${SRC_DIR}/gui/MainWindow.Project.cpp
     ${SRC_DIR}/gui/GraphView.cpp
     ${SRC_DIR}/gui/Preferences.cpp
     ${SRC_DIR}/gui/PluginBrowser.cpp
@@ -69,5 +72,6 @@ target_compile_definitions(VSTHostApp PRIVATE
 )
 
 if (MSVC)
-    target_compile_options(VSTHostApp PRIVATE /permissive- /Zc:__cplusplus /EHsc /O2 /DNDEBUG)
+    target_compile_options(VSTHostApp PRIVATE /permissive- /Zc:__cplusplus /EHsc)
+    target_compile_options(VSTHostApp PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/DNDEBUG>)
 endif()

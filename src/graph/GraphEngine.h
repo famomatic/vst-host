@@ -4,6 +4,7 @@
 
 #include <juce_core/juce_core.h>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -50,6 +51,13 @@ public:
     [[nodiscard]] NodeId getOutputNode() const;
 
 private:
+    struct RuntimeState
+    {
+        std::vector<Node*> scheduleNodes;
+        double sampleRate = 0.0;
+        int blockSize = 0;
+    };
+
     struct NodeEntry
     {
         NodeId id;
@@ -61,19 +69,25 @@ private:
     [[nodiscard]] Node* getNodeUnlocked(const NodeId& id) const;
     [[nodiscard]] bool hasNodeUnlocked(const NodeId& id) const;
     NodeId addNodeUnlocked(std::unique_ptr<Node> node, std::optional<NodeId> requestedId);
+    void invalidateRuntimeUnlocked();
+    void suspendProcessingAndDrainUnlocked();
+    void resumeProcessingUnlocked();
+    void waitForInFlightCallbacks() const;
     void buildScheduleUnlocked();
 
     mutable std::mutex mutex_;
     std::vector<NodeEntry> nodes_;
     std::unordered_map<std::string, size_t> indexById_;
     std::vector<NodeId> schedule_;
-    std::vector<float*> channelPointers_;
 
     NodeId inputNode_;
     NodeId outputNode_;
 
     double sampleRate_ = 0.0;
     int blockSize_ = 0;
-    bool prepared_ = false;
+
+    std::atomic<bool> processingSuspended_ { false };
+    std::atomic<int> inFlightProcessCallbacks_ { 0 };
+    std::atomic<std::shared_ptr<const RuntimeState>> runtimeState_ { nullptr };
 };
 } // namespace host::graph

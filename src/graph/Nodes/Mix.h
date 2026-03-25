@@ -5,7 +5,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <algorithm>
-#include <vector>
+#include <array>
 
 namespace host::graph::nodes
 {
@@ -14,9 +14,9 @@ namespace host::graph::nodes
     public:
         void prepare(double, int blockSize) override
         {
-            preparedBlockSize_ = std::max(0, blockSize);
-            mixBuffer_.setSize(0, 0);
-            contributions_.clear();
+            preparedBlockSize_ = std::max(1, blockSize);
+            mixBuffer_.setSize(kMaxChannels, preparedBlockSize_, false, false, true);
+            contributions_.fill(0);
         }
 
         void process(ProcessContext& context) override
@@ -28,6 +28,16 @@ namespace host::graph::nodes
             if (frames == 0 || outputs == 0 || context.outputChannels == nullptr)
                 return;
 
+            if (outputs > kMaxChannels)
+            {
+                for (int ch = 0; ch < outputs; ++ch)
+                {
+                    if (auto* dest = context.outputChannels[ch])
+                        juce::FloatVectorOperations::clear(dest, frames);
+                }
+                return;
+            }
+
             if (context.inputChannels == nullptr || inputs == 0)
             {
                 for (int ch = 0; ch < outputs; ++ch)
@@ -38,12 +48,18 @@ namespace host::graph::nodes
                 return;
             }
 
-            const int requiredSamples = std::max(frames, preparedBlockSize_);
-            if (mixBuffer_.getNumChannels() != outputs || mixBuffer_.getNumSamples() < requiredSamples)
-                mixBuffer_.setSize(outputs, requiredSamples, false, false, true);
+            if (frames > mixBuffer_.getNumSamples())
+            {
+                for (int ch = 0; ch < outputs; ++ch)
+                {
+                    if (auto* dest = context.outputChannels[ch])
+                        juce::FloatVectorOperations::clear(dest, frames);
+                }
+                return;
+            }
 
             mixBuffer_.clear();
-            contributions_.assign(static_cast<size_t>(outputs), 0);
+            contributions_.fill(0);
 
             for (int inCh = 0; inCh < inputs; ++inCh)
             {
@@ -87,8 +103,9 @@ namespace host::graph::nodes
         std::string name() const override { return "Mix"; }
 
     private:
+        static constexpr int kMaxChannels = 64;
         juce::AudioBuffer<float> mixBuffer_;
-        std::vector<int> contributions_;
+        std::array<int, static_cast<size_t>(kMaxChannels)> contributions_ {};
         int preparedBlockSize_ { 0 };
     };
 }

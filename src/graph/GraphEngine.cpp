@@ -1,8 +1,10 @@
 #include "graph/GraphEngine.h"
 
 #include <algorithm>
+#include <array>
 #include <queue>
 #include <stdexcept>
+#include <thread>
 
 namespace host::graph
 {
@@ -10,25 +12,66 @@ namespace
 {
 constexpr double defaultSampleRate = 48000.0;
 constexpr int defaultBlockSize = 256;
-}
+constexpr int maxProcessChannels = 64;
+
+struct ProcessCallbackGuard
+{
+    explicit ProcessCallbackGuard(std::atomic<int>& counterIn) : counter(counterIn)
+    {
+        counter.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    ~ProcessCallbackGuard()
+    {
+        counter.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    std::atomic<int>& counter;
+};
+} // namespace
 
 std::string GraphEngine::toKey(const NodeId& id)
 {
     return id.toString().toStdString();
 }
 
+void GraphEngine::waitForInFlightCallbacks() const
+{
+    while (inFlightProcessCallbacks_.load(std::memory_order_acquire) > 0)
+        std::this_thread::yield();
+}
+
+void GraphEngine::suspendProcessingAndDrainUnlocked()
+{
+    processingSuspended_.store(true, std::memory_order_release);
+    waitForInFlightCallbacks();
+}
+
+void GraphEngine::resumeProcessingUnlocked()
+{
+    processingSuspended_.store(false, std::memory_order_release);
+}
+
+void GraphEngine::invalidateRuntimeUnlocked()
+{
+    runtimeState_.store(nullptr, std::memory_order_release);
+}
+
 void GraphEngine::clear()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    suspendProcessingAndDrainUnlocked();
+
     nodes_.clear();
     indexById_.clear();
     schedule_.clear();
-    channelPointers_.clear();
     inputNode_ = {};
     outputNode_ = {};
     sampleRate_ = defaultSampleRate;
     blockSize_ = defaultBlockSize;
-    prepared_ = false;
+    invalidateRuntimeUnlocked();
+
+    resumeProcessingUnlocked();
 }
 
 GraphEngine::NodeId GraphEngine::addNode(std::unique_ptr<Node> node)
@@ -78,7 +121,7 @@ GraphEngine::NodeId GraphEngine::addNodeUnlocked(std::unique_ptr<Node> node, std
 
     indexById_[key] = nodes_.size();
     nodes_.push_back(std::move(entry));
-    prepared_ = false;
+    invalidateRuntimeUnlocked();
 
     return id;
 }
@@ -96,34 +139,51 @@ void GraphEngine::removeNode(NodeId id)
     if (! hasNodeUnlocked(id))
         return;
 
-    const auto key = toKey(id);
-    const auto indexIt = indexById_.find(key);
-    if (indexIt == indexById_.end())
-        return;
+    suspendProcessingAndDrainUnlocked();
 
-    const auto index = indexIt->second;
-    if (index >= nodes_.size())
-        return;
-
-    for (auto& entry : nodes_)
+    try
     {
-        auto& outputs = entry.outputs;
-        outputs.erase(std::remove(outputs.begin(), outputs.end(), id), outputs.end());
+        const auto key = toKey(id);
+        const auto indexIt = indexById_.find(key);
+        if (indexIt == indexById_.end())
+        {
+            resumeProcessingUnlocked();
+            return;
+        }
+
+        const auto index = indexIt->second;
+        if (index >= nodes_.size())
+        {
+            resumeProcessingUnlocked();
+            return;
+        }
+
+        for (auto& entry : nodes_)
+        {
+            auto& outputs = entry.outputs;
+            outputs.erase(std::remove(outputs.begin(), outputs.end(), id), outputs.end());
+        }
+
+        nodes_.erase(nodes_.begin() + static_cast<std::ptrdiff_t>(index));
+        indexById_.erase(indexIt);
+
+        indexById_.clear();
+        for (size_t i = 0; i < nodes_.size(); ++i)
+            indexById_[toKey(nodes_[i].id)] = i;
+
+        if (inputNode_ == id)
+            inputNode_ = {};
+        if (outputNode_ == id)
+            outputNode_ = {};
+
+        invalidateRuntimeUnlocked();
+        resumeProcessingUnlocked();
     }
-
-    nodes_.erase(nodes_.begin() + static_cast<std::ptrdiff_t>(index));
-    indexById_.erase(indexIt);
-
-    indexById_.clear();
-    for (size_t i = 0; i < nodes_.size(); ++i)
-        indexById_[toKey(nodes_[i].id)] = i;
-
-    if (inputNode_ == id)
-        inputNode_ = {};
-    if (outputNode_ == id)
-        outputNode_ = {};
-
-    prepared_ = false;
+    catch (...)
+    {
+        resumeProcessingUnlocked();
+        throw;
+    }
 }
 
 void GraphEngine::setIO(NodeId inputNode, NodeId outputNode)
@@ -135,6 +195,7 @@ void GraphEngine::setIO(NodeId inputNode, NodeId outputNode)
 
     inputNode_ = inputNode;
     outputNode_ = outputNode;
+    invalidateRuntimeUnlocked();
 }
 
 void GraphEngine::connect(NodeId from, NodeId to)
@@ -156,7 +217,7 @@ void GraphEngine::connect(NodeId from, NodeId to)
     if (! alreadyConnected)
         outputs.push_back(to);
 
-    prepared_ = false;
+    invalidateRuntimeUnlocked();
 }
 
 void GraphEngine::disconnect(NodeId from, NodeId to)
@@ -177,7 +238,7 @@ void GraphEngine::disconnect(NodeId from, NodeId to)
     if (newEnd != outputs.end())
     {
         outputs.erase(newEnd, outputs.end());
-        prepared_ = false;
+        invalidateRuntimeUnlocked();
     }
 }
 
@@ -187,35 +248,71 @@ void GraphEngine::setEngineFormat(double sampleRate, int blockSize)
 
     sampleRate_ = (sampleRate > 0.0) ? sampleRate : defaultSampleRate;
     blockSize_ = (blockSize > 0) ? blockSize : defaultBlockSize;
-    prepared_ = false;
+    invalidateRuntimeUnlocked();
 }
 
 void GraphEngine::prepare()
 {
     std::lock_guard<std::mutex> lock(mutex_);
+    suspendProcessingAndDrainUnlocked();
 
-    buildScheduleUnlocked();
-
-    if (schedule_.empty())
+    try
     {
-        prepared_ = true;
-        return;
-    }
+        buildScheduleUnlocked();
 
-    for (const auto& id : schedule_)
+        if (schedule_.empty())
+        {
+            invalidateRuntimeUnlocked();
+            resumeProcessingUnlocked();
+            return;
+        }
+
+        for (const auto& id : schedule_)
+        {
+            if (auto* node = getNodeUnlocked(id))
+                node->prepare(sampleRate_, blockSize_);
+        }
+
+        auto runtime = std::make_shared<RuntimeState>();
+        runtime->sampleRate = sampleRate_;
+        runtime->blockSize = blockSize_;
+        runtime->scheduleNodes.reserve(schedule_.size());
+
+        for (const auto& id : schedule_)
+        {
+            if (auto* node = getNodeUnlocked(id))
+                runtime->scheduleNodes.push_back(node);
+        }
+
+        runtimeState_.store(std::move(runtime), std::memory_order_release);
+        resumeProcessingUnlocked();
+    }
+    catch (...)
     {
-        if (auto* node = getNodeUnlocked(id))
-            node->prepare(sampleRate_, blockSize_);
+        invalidateRuntimeUnlocked();
+        resumeProcessingUnlocked();
+        throw;
     }
-
-    prepared_ = true;
 }
 
 int GraphEngine::process(juce::AudioBuffer<float>& buffer)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    if (processingSuspended_.load(std::memory_order_acquire))
+    {
+        buffer.clear();
+        return 0;
+    }
 
-    if (! prepared_ || schedule_.empty())
+    ProcessCallbackGuard inFlight(inFlightProcessCallbacks_);
+
+    if (processingSuspended_.load(std::memory_order_acquire))
+    {
+        buffer.clear();
+        return 0;
+    }
+
+    auto runtime = runtimeState_.load(std::memory_order_acquire);
+    if (! runtime || runtime->scheduleNodes.empty())
     {
         buffer.clear();
         return 0;
@@ -223,25 +320,33 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
 
     const int numChannels = buffer.getNumChannels();
     const int numSamples = buffer.getNumSamples();
+    if (numChannels <= 0 || numSamples <= 0)
+        return 0;
 
-    channelPointers_.resize(static_cast<size_t>(std::max(0, numChannels)), nullptr);
+    if (numChannels > maxProcessChannels)
+    {
+        buffer.clear();
+        return 0;
+    }
+
+    std::array<float*, static_cast<size_t>(maxProcessChannels)> channelPointers {};
     for (int ch = 0; ch < numChannels; ++ch)
-        channelPointers_[static_cast<size_t>(ch)] = buffer.getWritePointer(ch);
+        channelPointers[static_cast<size_t>(ch)] = buffer.getWritePointer(ch);
 
     ProcessContext context {
         buffer,
-        channelPointers_.empty() ? nullptr : channelPointers_.data(),
-        channelPointers_.empty() ? nullptr : channelPointers_.data(),
+        channelPointers.data(),
+        channelPointers.data(),
         numChannels,
         numChannels,
-        sampleRate_,
-        blockSize_,
+        runtime->sampleRate,
+        runtime->blockSize,
         numSamples
     };
 
-    for (const auto& id : schedule_)
+    for (auto* node : runtime->scheduleNodes)
     {
-        if (auto* node = getNodeUnlocked(id))
+        if (node != nullptr)
             node->process(context);
     }
 
@@ -313,10 +418,7 @@ void GraphEngine::buildScheduleUnlocked()
     schedule_.clear();
 
     if (nodes_.empty())
-    {
-        prepared_ = true;
         return;
-    }
 
     const size_t nodeCount = nodes_.size();
     std::vector<int> indegree(nodeCount, 0);

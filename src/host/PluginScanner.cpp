@@ -302,11 +302,17 @@ namespace host::plugin
 
         for (auto& path : pathsCopy)
         {
+            if (! scanning.load())
+                break;
+
             std::vector<juce::File> pending;
             pending.push_back(path);
 
             while (! pending.empty())
             {
+                if (! scanning.load())
+                    break;
+
                 auto current = pending.back();
                 pending.pop_back();
 
@@ -350,6 +356,9 @@ namespace host::plugin
                                            juce::File::findFilesAndDirectories);
                 while (it.next())
                 {
+                    if (! scanning.load())
+                        break;
+
                     auto candidate = it.getFile();
                     if (candidate.isDirectory())
                     {
@@ -417,6 +426,9 @@ namespace host::plugin
                 }
             }
         }
+
+        if (! scanning.load())
+            return;
 
         {
             const juce::ScopedLock lock(stateLock);
