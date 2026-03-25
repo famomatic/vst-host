@@ -252,15 +252,20 @@ namespace
         return parent == "macos";
     }
 
-    [[nodiscard]] bool isCandidateModuleFile(const std::filesystem::path& path)
+    [[nodiscard]] bool isCandidateVst3ModuleFile(const std::filesystem::path& path)
     {
         auto ext = toLowerCopy(path.extension().string());
-        if (ext == ".vst3" || ext == ".dll" || ext == ".so" || ext == ".dylib")
+#if defined(_WIN32)
+        return ext == ".vst3";
+#elif defined(__APPLE__)
+        if (ext == ".dylib")
             return true;
 
         if (ext.empty() && isLikelyMacOsBinary(path))
             return true;
-
+#else
+        return ext == ".so";
+#endif
         return false;
     }
 
@@ -276,7 +281,7 @@ namespace
                 continue;
 
             const auto candidate = it->path();
-            if (isCandidateModuleFile(candidate))
+            if (isCandidateVst3ModuleFile(candidate))
                 return candidate;
         }
 
@@ -322,7 +327,7 @@ namespace
 
         if (std::filesystem::is_regular_file(providedPath, ec) && ! ec)
         {
-            if (isCandidateModuleFile(providedPath))
+            if (isCandidateVst3ModuleFile(providedPath))
                 return providedPath;
         }
 
@@ -346,8 +351,6 @@ namespace
                 searchRoots.push_back(candidate);
         };
 
-        addSearchRoot(providedPath);
-
         const auto filenameLower = toLowerCopy(providedPath.filename().string());
         if (filenameLower == "contents" || filenameLower == "resources" || filenameLower == "macos")
         {
@@ -369,6 +372,8 @@ namespace
              ! dirEc && dirIt != end;
              ++dirIt)
             addSearchRoot(dirIt->path());
+
+        addSearchRoot(providedPath);
 
         for (const auto& root : searchRoots)
         {
@@ -1900,8 +1905,6 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         {
             if (! instantiateWithContext(false))
                 continue;
-
-            hostContext = nullptr;
         }
 
         Steinberg::TUID controllerClassId {};
@@ -1970,14 +1973,19 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
     if (controller)
     {
         controller->setComponentHandler(componentHandler);
-        if (controller->initialize(hostContext ? static_cast<Steinberg::Vst::IHostApplication*>(hostContext.get()) : nullptr) != Steinberg::kResultOk)
+        auto initializeController = [&](Steinberg::Vst::IHostApplication* hostApp) -> bool
         {
-            releaseController(false);
-        }
-        else
-        {
+            return controller->initialize(hostApp) == Steinberg::kResultOk;
+        };
+
+        bool initializedWithHost = false;
+        if (hostContext)
+            initializedWithHost = initializeController(static_cast<Steinberg::Vst::IHostApplication*>(hostContext.get()));
+
+        if (initializedWithHost || initializeController(nullptr))
             controllerInitialized = true;
-        }
+        else
+            releaseController(false);
     }
 
     if (controller && controllerInitialized && component)

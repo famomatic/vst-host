@@ -21,7 +21,21 @@ namespace host::plugin
             if (! entry.isDirectory())
                 return entry;
 
-            const auto findModuleInDirectory = [](const juce::File& directory) -> juce::File
+            const auto isCandidateVst3ModuleFile = [](const juce::File& candidate) -> bool
+            {
+                const auto ext = candidate.getFileExtension().toLowerCase();
+#if JUCE_WINDOWS
+                return ext == ".vst3";
+#elif JUCE_MAC
+                const bool isBundleBinary = ext.isEmpty()
+                                            && candidate.getParentDirectory().getFileName().equalsIgnoreCase("MacOS");
+                return ext == ".dylib" || isBundleBinary;
+#else
+                return ext == ".so";
+#endif
+            };
+
+            const auto findModuleInDirectory = [&](const juce::File& directory) -> juce::File
             {
                 if (! directory.isDirectory())
                     return {};
@@ -36,11 +50,7 @@ namespace host::plugin
                     if (candidate.isDirectory())
                         continue;
 
-                    auto ext = candidate.getFileExtension().toLowerCase();
-                    const bool isBundleBinary = ext.isEmpty()
-                                                && candidate.getParentDirectory().getFileName().equalsIgnoreCase("MacOS");
-
-                    if (ext == ".vst3" || ext == ".dll" || ext == ".so" || ext == ".dylib" || isBundleBinary)
+                    if (isCandidateVst3ModuleFile(candidate))
                         return candidate;
                 }
 
