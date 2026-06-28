@@ -27,5 +27,11 @@ public:
     virtual void process(ProcessContext& context) = 0;
     virtual int latencySamples() const { return 0; }
     virtual std::string name() const = 0;
+
+    // Audio channel configuration. Returning a value <= 0 means the node is
+    // channel-agnostic and will be fed the host bus width. Nodes with a fixed
+    // bus layout (e.g. VST plug-ins) report their actual bus channel counts.
+    virtual int inputChannelCount() const { return 0; }
+    virtual int outputChannelCount() const { return 0; }
 };
 } // namespace host::graph

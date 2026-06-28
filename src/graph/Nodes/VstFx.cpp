@@ -42,6 +42,20 @@ namespace host::graph::nodes
         return instance_ ? instance_->latencySamples() : 0;
     }
 
+    int VstFxNode::inputChannelCount() const
+    {
+        if (pluginInfo_.has_value() && pluginInfo_->ins > 0)
+            return pluginInfo_->ins;
+        return 2;
+    }
+
+    int VstFxNode::outputChannelCount() const
+    {
+        if (pluginInfo_.has_value() && pluginInfo_->outs > 0)
+            return pluginInfo_->outs;
+        return 2;
+    }
+
     std::string VstFxNode::name() const
     {
         if (! pluginName_.empty())

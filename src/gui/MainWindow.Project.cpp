@@ -108,13 +108,14 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
     auto createNodeForDefinition = [&](const host::persist::Project::NodeDefinition& definition)
         -> std::unique_ptr<host::graph::Node>
     {
-        const auto normalisedType = definition.type.isNotEmpty()
-                                        ? definition.type.toLowerCase().removeCharacters(" ")
-                                        : definition.name.toLowerCase().removeCharacters(" ");
+        // Prefer the persisted type field; fall back to the display name when
+        // older project files omit it. Both are normalised for matching.
+        const auto rawType = definition.type.isNotEmpty() ? definition.type : definition.name;
+        const auto normalisedType = rawType.toLowerCase().removeCharacters(" ");
 
-        if (normalisedType == "audioin" || definition.name.equalsIgnoreCase("Audio In"))
+        if (normalisedType == "audioin" || normalisedType == "audioinnode")
             return std::make_unique<host::graph::nodes::AudioInNode>();
-        if (normalisedType == "audioout" || definition.name.equalsIgnoreCase("Audio Out"))
+        if (normalisedType == "audioout" || normalisedType == "audiooutnode")
             return std::make_unique<host::graph::nodes::AudioOutNode>();
         if (normalisedType == "gain")
             return std::make_unique<host::graph::nodes::GainNode>();
@@ -315,7 +316,20 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
         }
     }
 
-    graphEngine->prepare();
+    try
+    {
+        graphEngine->prepare();
+    }
+    catch (const std::exception& e)
+    {
+        juce::Logger::writeToLog("Failed to prepare graph after project rebuild: " + juce::String(e.what()));
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               host::i18n::tr("error.graphPrepare.title"),
+                                               host::i18n::tr("error.graphPrepare.message").replace("%1", juce::String(e.what())));
+        initialiseGraph();
+        return;
+    }
+
     graphView.refreshGraph(false);
 
     if (missingPlugins.size() > 0)

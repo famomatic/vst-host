@@ -8,6 +8,25 @@
 namespace host::gui
 {
     using host::i18n::tr;
+    namespace
+    {
+        void reportAudioDeviceError(const juce::String& action, const juce::String& error, bool showAlert)
+        {
+            if (error.isEmpty())
+                return;
+
+            const auto message = "Audio device operation failed (" + action + "): " + error;
+            juce::Logger::writeToLog(message);
+
+            if (showAlert)
+            {
+                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                       host::i18n::tr("dialog.audioSettings.title"),
+                                                       message);
+            }
+        }
+    }
+
     PreferencesComponent::PreferencesComponent(host::audio::DeviceEngine& engine,
                                                std::shared_ptr<host::plugin::PluginScanner> scanner,
                                                juce::AudioDeviceManager& manager,
@@ -95,6 +114,12 @@ namespace host::gui
             if (selectedDriver.isNotEmpty())
             {
                 deviceManager.setCurrentAudioDeviceType(selectedDriver, true);
+                if (deviceManager.getCurrentAudioDeviceType() != selectedDriver)
+                {
+                    reportAudioDeviceError("setCurrentAudioDeviceType",
+                                           "Requested device type was not applied: " + selectedDriver,
+                                           true);
+                }
                 refreshDeviceLists();
             }
         };
@@ -108,7 +133,8 @@ namespace host::gui
             deviceManager.getAudioDeviceSetup(setup);
             const auto selected = inputDeviceBox.getText();
             setup.inputDeviceName = (selected.isNotEmpty() && selected != "(None)") ? selected : juce::String();
-            deviceManager.setAudioDeviceSetup(setup, true);
+            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
+            reportAudioDeviceError("setAudioDeviceSetup(input)", error, true);
             refreshDeviceLists();
         };
 
@@ -121,7 +147,8 @@ namespace host::gui
             deviceManager.getAudioDeviceSetup(setup);
             const auto selected = outputDeviceBox.getText();
             setup.outputDeviceName = (selected.isNotEmpty() && selected != "(None)") ? selected : juce::String();
-            deviceManager.setAudioDeviceSetup(setup, true);
+            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
+            reportAudioDeviceError("setAudioDeviceSetup(output)", error, true);
             refreshDeviceLists();
         };
 
@@ -137,7 +164,8 @@ namespace host::gui
             juce::AudioDeviceManager::AudioDeviceSetup setup;
             deviceManager.getAudioDeviceSetup(setup);
             setup.sampleRate = selectedRate;
-            deviceManager.setAudioDeviceSetup(setup, true);
+            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
+            reportAudioDeviceError("setAudioDeviceSetup(sampleRate)", error, true);
 
             auto cfg = deviceEngine.getEngineConfig();
             cfg.sampleRate = selectedRate;
@@ -159,7 +187,8 @@ namespace host::gui
             juce::AudioDeviceManager::AudioDeviceSetup setup;
             deviceManager.getAudioDeviceSetup(setup);
             setup.bufferSize = selectedBlock;
-            deviceManager.setAudioDeviceSetup(setup, true);
+            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
+            reportAudioDeviceError("setAudioDeviceSetup(bufferSize)", error, true);
 
             auto cfg = deviceEngine.getEngineConfig();
             cfg.blockSize = selectedBlock;
@@ -325,6 +354,12 @@ namespace host::gui
             selectedId = driverBox.getItemId(0);
             const auto fallbackType = driverBox.getItemText(0);
             deviceManager.setCurrentAudioDeviceType(fallbackType, true);
+            if (deviceManager.getCurrentAudioDeviceType() != fallbackType)
+            {
+                reportAudioDeviceError("setCurrentAudioDeviceType(fallback)",
+                                       "Requested fallback device type was not applied: " + fallbackType,
+                                       false);
+            }
         }
 
         driverBox.setSelectedId(selectedId, juce::dontSendNotification);
@@ -370,7 +405,10 @@ namespace host::gui
         }
 
         if (updatedSelection)
-            deviceManager.setAudioDeviceSetup(setup, true);
+        {
+            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
+            reportAudioDeviceError("setAudioDeviceSetup(autoSelect)", error, false);
+        }
 
         deviceManager.getAudioDeviceSetup(setup);
 

@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "graph/Nodes/VstFx.h"
+#include "persist/Preset.h"
 #include "util/Localization.h"
 
 namespace host::gui
@@ -102,6 +103,14 @@ PluginSettingsComponent::PluginSettingsComponent(std::shared_ptr<host::graph::Gr
     openEditorButton.onClick = [this]() { openEditor(); };
     addAndMakeVisible(openEditorButton);
 
+    savePresetButton.setButtonText(tr("plugin.settings.savePreset"));
+    savePresetButton.onClick = [this]() { savePreset(); };
+    addAndMakeVisible(savePresetButton);
+
+    loadPresetButton.setButtonText(tr("plugin.settings.loadPreset"));
+    loadPresetButton.onClick = [this]() { loadPreset(); };
+    addAndMakeVisible(loadPresetButton);
+
     refresh();
 }
 
@@ -141,6 +150,10 @@ void PluginSettingsComponent::resized()
 
     auto editorRow = area.removeFromTop(kRowHeight);
     openEditorButton.setBounds(editorRow.removeFromLeft(kLabelWidth + 220));
+
+    auto presetRow = area.removeFromTop(kRowHeight);
+    savePresetButton.setBounds(presetRow.removeFromLeft(140).reduced(2));
+    loadPresetButton.setBounds(presetRow.removeFromLeft(140).reduced(2));
 }
 
 void PluginSettingsComponent::updateContent()
@@ -308,5 +321,108 @@ void PluginSettingsComponent::openEditor()
     options.resizable = true;
     options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
     options.launchAsync();
+}
+
+void PluginSettingsComponent::savePreset()
+{
+    auto graphPtr = graph.lock();
+    if (! graphPtr)
+        return;
+
+    auto node = graphPtr->getNode(targetId);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
+    if (vstNode == nullptr)
+        return;
+
+    auto* plugin = vstNode->plugin();
+    if (plugin == nullptr)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.title"),
+                                               tr("plugin.settings.unavailable"));
+        return;
+    }
+
+    std::vector<std::uint8_t> stateData;
+    if (! plugin->getState(stateData) || stateData.empty())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.title"),
+                                               tr("plugin.settings.unavailable"));
+        return;
+    }
+
+    host::persist::Preset preset;
+    preset.setName(juce::String(vstNode->name()));
+    preset.captureFromState(juce::MemoryBlock(stateData.data(), stateData.size()));
+
+    juce::FileChooser chooser(tr("plugin.settings.savePreset"),
+                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                              "*.vstpreset");
+    if (! chooser.browseForFileToSave(true))
+        return;
+
+    if (! preset.save(chooser.getResult()))
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.title"),
+                                               tr("plugin.settings.unavailable"));
+    }
+}
+
+void PluginSettingsComponent::loadPreset()
+{
+    auto graphPtr = graph.lock();
+    if (! graphPtr)
+        return;
+
+    auto node = graphPtr->getNode(targetId);
+    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
+    if (vstNode == nullptr)
+        return;
+
+    auto* plugin = vstNode->plugin();
+    if (plugin == nullptr)
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.title"),
+                                               tr("plugin.settings.unavailable"));
+        return;
+    }
+
+    juce::FileChooser chooser(tr("plugin.settings.loadPreset"),
+                              juce::File::getSpecialLocation(juce::File::userDocumentsDirectory),
+                              "*.vstpreset");
+    if (! chooser.browseForFileToOpen())
+        return;
+
+    host::persist::Preset preset;
+    if (! preset.load(chooser.getResult()))
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.title"),
+                                               tr("plugin.settings.unavailable"));
+        return;
+    }
+
+    juce::MemoryBlock state;
+    if (! preset.applyToState(state))
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.title"),
+                                               tr("plugin.settings.unavailable"));
+        return;
+    }
+
+    if (! plugin->setState(static_cast<const std::uint8_t*>(state.getData()),
+                          static_cast<std::size_t>(state.getSize())))
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               tr("plugin.settings.title"),
+                                               tr("plugin.settings.unavailable"));
+        return;
+    }
+
+    updateContent();
 }
 } // namespace host::gui

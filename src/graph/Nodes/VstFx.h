@@ -25,6 +25,8 @@ namespace host::graph::nodes
        void process(ProcessContext& ctx) override;
        int latencySamples() const noexcept override;
        std::string name() const override;
+        int inputChannelCount() const override;
+        int outputChannelCount() const override;
         void setDisplayName(std::string newName);
 
         [[nodiscard]] host::plugin::PluginInstance* plugin() const noexcept { return instance_.get(); }

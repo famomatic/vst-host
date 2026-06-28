@@ -552,6 +552,35 @@ namespace
             return static_cast<intptr_t>(instance != nullptr ? instance->currentSampleRate() : 44100.0);
         case VST_HOST_OPCODE_GET_BLOCK_SIZE:
             return static_cast<intptr_t>(instance != nullptr ? instance->currentBlockSize() : 512);
+        case VST_HOST_OPCODE_IO_MODIFIED:
+            // The plug-in reports an IO configuration change. We accept the
+            // notification; runtime channel counts are refreshed lazily on
+            // the next prepare().
+            return VST_STATUS_TRUE;
+        case VST_HOST_OPCODE_INPUT_LATENCY:
+            return 0;
+        case VST_HOST_OPCODE_OUTPUT_LATENCY:
+            return 0;
+        case VST_HOST_OPCODE_REFRESH:
+            // Editor refresh requests are best-effort; the timer-driven idle
+            // loop already keeps the editor in sync.
+            return VST_STATUS_TRUE;
+        case VST_HOST_OPCODE_VENDOR_NAME:
+            if (ptr != nullptr)
+            {
+                std::strncpy(const_cast<char*>(ptr), "Waktaverse", 127);
+                return 1;
+            }
+            return 0;
+        case VST_HOST_OPCODE_PRODUCT_NAME:
+            if (ptr != nullptr)
+            {
+                std::strncpy(const_cast<char*>(ptr), "VST Host", 127);
+                return 1;
+            }
+            return 0;
+        case VST_HOST_OPCODE_VENDOR_VERSION:
+            return 0x00010000; // 0.1.0
         default:
             break;
         }

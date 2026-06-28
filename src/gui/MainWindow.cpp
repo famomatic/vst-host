@@ -334,7 +334,15 @@ MainWindow::MainWindow()
     deviceEngine.setGraph(graphEngine);
     deviceEngine.setEngineConfig({ 48000.0, 256 });
 
-    deviceManager.initialise(0, 2, nullptr, true);
+    const auto deviceInitError = deviceManager.initialise(2, 2, nullptr, true);
+    if (deviceInitError.isNotEmpty())
+    {
+        juce::Logger::writeToLog("Audio device initialization failed: " + deviceInitError);
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                               host::i18n::tr("dialog.audioSettings.title"),
+                                               "Audio device initialization failed.\n" + deviceInitError);
+    }
+
     deviceManager.addAudioCallback(&deviceEngine);
 
     pluginBrowser.setScanner(pluginScanner);

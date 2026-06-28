@@ -58,7 +58,10 @@ private:
         std::shared_ptr<Node> node;
         std::vector<size_t> inputIndices;
         juce::AudioBuffer<float> buffer;
+        juce::AudioBuffer<float> inputBuffer;
         bool receivesHostInput = false;
+        int numInputChannels = 0;
+        int numOutputChannels = 0;
     };
 
     struct RuntimeState

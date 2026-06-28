@@ -1,4 +1,3 @@
-#include <iostream>
 
 #include "util/ConsoleLogger.h"
 
@@ -27,7 +26,6 @@ void ConsoleLogger::logMessage(const juce::String& message)
     }
 
     juce::Logger::outputDebugString(formatted);
-    std::cout << formatted.toStdString() << std::endl;
 }
 
 bool ConsoleLogger::copyMessagesSince(size_t& lastSequence, juce::StringArray& dest) const

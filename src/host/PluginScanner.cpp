@@ -209,9 +209,9 @@ namespace host::plugin
             {
                 for (auto& pluginVar : *arr)
                 {
-                    PluginInfo info;
                     if (auto* obj = pluginVar.getDynamicObject())
                     {
+                        PluginInfo info;
                         info.id = obj->getProperty("id").toString().toStdString();
                         info.name = obj->getProperty("name").toString().toStdString();
                         info.format = obj->getProperty("format").toString() == "VST2" ? PluginFormat::VST2 : PluginFormat::VST3;
@@ -221,8 +221,10 @@ namespace host::plugin
                         if (auto outs = obj->getProperty("outs"); ! outs.isVoid())
                             info.outs = static_cast<int>(outs);
                         info.latency = static_cast<int>(obj->getProperty("latency"));
+
+                        if (! info.id.empty() || ! info.name.empty() || ! info.path.empty())
+                            loaded.push_back(std::move(info));
                     }
-                    loaded.push_back(info);
                 }
             }
         }

@@ -39,7 +39,6 @@
 #include <pluginterfaces/vst/ivstaudioprocessor.h>
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
-#include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivsthostapplication.h>
 #include <pluginterfaces/vst/ivstpluginterfacesupport.h>
 #include <pluginterfaces/vst/ivstcontextmenu.h>
@@ -1198,8 +1197,6 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         break;
     }
 
-    factory->release();
-
     if (! componentInitialised || ! component || ! processor)
     {
         juce::String failureMessage;
@@ -1229,9 +1226,12 @@ std::unique_ptr<PluginInstance> loadVst3(const PluginInfo& info)
         else
             failureMessage = "No compatible classes could be instantiated";
 
+        factory->release();
         logPluginLoadFailure(info, failureMessage);
         return nullptr;
     }
+
+    factory->release();
 
     if (! controller && component)
     {

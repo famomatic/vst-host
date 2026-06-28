@@ -106,22 +106,22 @@ namespace host::audio
     private:
         float* ensureSpace(int additional)
         {
+            // Realtime-safe: capacity is pre-allocated in prepare(). If a push
+            // would overflow, drop the oldest samples via memmove only — never
+            // reallocate from the audio thread.
             const int capacity = static_cast<int>(buffer.size());
-            if (stored + additional <= capacity)
-                return buffer.data() + stored;
-
-            const int required = stored + additional;
-            if (required > capacity)
+            if (stored + additional > capacity)
             {
-                // If we run out of space, drop the oldest samples to make room.
-                const int excess = required - capacity;
+                const int excess = (stored + additional) - capacity;
                 if (excess >= stored)
                 {
                     stored = 0;
                 }
                 else
                 {
-                    std::memmove(buffer.data(), buffer.data() + excess, static_cast<size_t>(stored - excess) * sizeof(float));
+                    std::memmove(buffer.data(),
+                                 buffer.data() + excess,
+                                 static_cast<size_t>(stored - excess) * sizeof(float));
                     stored -= excess;
                 }
             }

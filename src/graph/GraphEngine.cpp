@@ -278,7 +278,9 @@ void GraphEngine::prepare()
             runtimeNode.node = std::move(node);
             runtimeNode.receivesHostInput = (! inputNode_.isNull() && id == inputNode_);
             runtimeNode.buffer.setSize(maxProcessChannels, std::max(1, blockSize_), false, false, true);
+            runtimeNode.inputBuffer.setSize(maxProcessChannels, std::max(1, blockSize_), false, false, true);
             runtimeNode.buffer.clear();
+            runtimeNode.inputBuffer.clear();
 
             const auto runtimeIndex = runtime->nodes.size();
             runtime->indexByNodeId[toKey(id)] = runtimeIndex;
@@ -340,7 +342,7 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
         return 0;
     }
 
-    const int previousCallbacks = inFlightProcessCallbacks_.fetch_add(1, std::memory_order_acq_rel);
+    inFlightProcessCallbacks_.fetch_add(1, std::memory_order_acq_rel);
     const auto releaseInFlightCallback = [this]()
     {
         const int previous = inFlightProcessCallbacks_.fetch_sub(1, std::memory_order_acq_rel);
@@ -361,12 +363,6 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
 
         const decltype(releaseInFlightCallback)& fn;
     } inFlightScopeExit(releaseInFlightCallback);
-
-    if (previousCallbacks > 0)
-    {
-        buffer.clear();
-        return 0;
-    }
 
     if (processingSuspended_.load(std::memory_order_acquire))
     {
@@ -403,45 +399,71 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
 
     for (auto& runtimeNode : runtime->nodes)
     {
+        // Resolve the node's actual channel configuration. Nodes reporting 0
+        // are channel-agnostic and inherit the host bus width.
+        int nodeInputs = runtimeNode.node ? runtimeNode.node->inputChannelCount() : 0;
+        int nodeOutputs = runtimeNode.node ? runtimeNode.node->outputChannelCount() : 0;
+        if (nodeInputs <= 0)
+            nodeInputs = numChannels;
+        if (nodeOutputs <= 0)
+            nodeOutputs = numChannels;
+        nodeInputs = std::min(nodeInputs, numChannels);
+        nodeOutputs = std::min(nodeOutputs, numChannels);
+        runtimeNode.numInputChannels = nodeInputs;
+        runtimeNode.numOutputChannels = nodeOutputs;
+
         runtimeNode.buffer.clear();
+        runtimeNode.inputBuffer.clear();
 
-        for (int ch = 0; ch < numChannels; ++ch)
+        // Populate the node's input buffer from upstream sources (or the host
+        // bus for the input node). Sources are summed so parallel paths mix.
+        if (runtimeNode.inputIndices.empty())
         {
-            auto* destination = runtimeNode.buffer.getWritePointer(ch);
-            if (destination == nullptr)
-                continue;
-
-            if (runtimeNode.inputIndices.empty())
+            if (runtimeNode.receivesHostInput)
             {
-                if (runtimeNode.receivesHostInput)
+                for (int ch = 0; ch < nodeInputs; ++ch)
                 {
                     const auto* source = buffer.getReadPointer(ch);
-                    juce::FloatVectorOperations::copy(destination, source, numSamples);
+                    auto* dest = runtimeNode.inputBuffer.getWritePointer(ch);
+                    if (source != nullptr && dest != nullptr)
+                        juce::FloatVectorOperations::copy(dest, source, numSamples);
                 }
             }
-            else
-            {
-                for (const auto sourceIndex : runtimeNode.inputIndices)
-                {
-                    if (sourceIndex >= runtime->nodes.size())
-                        continue;
-
-                    const auto* source = runtime->nodes[sourceIndex].buffer.getReadPointer(ch);
-                    if (source != nullptr)
-                        juce::FloatVectorOperations::add(destination, source, numSamples);
-                }
-            }
-
-            inPointers[static_cast<size_t>(ch)] = runtimeNode.buffer.getWritePointer(ch);
-            outPointers[static_cast<size_t>(ch)] = runtimeNode.buffer.getWritePointer(ch);
         }
+        else
+        {
+            for (const auto sourceIndex : runtimeNode.inputIndices)
+            {
+                if (sourceIndex >= runtime->nodes.size())
+                    continue;
+
+                const auto& sourceNode = runtime->nodes[sourceIndex];
+                const int sourceChannels = sourceNode.numOutputChannels > 0
+                                                ? sourceNode.numOutputChannels
+                                                : numChannels;
+                const int channelsToMix = std::min(sourceChannels, nodeInputs);
+
+                for (int ch = 0; ch < channelsToMix; ++ch)
+                {
+                    const auto* source = sourceNode.buffer.getReadPointer(ch);
+                    auto* dest = runtimeNode.inputBuffer.getWritePointer(ch);
+                    if (source != nullptr && dest != nullptr)
+                        juce::FloatVectorOperations::add(dest, source, numSamples);
+                }
+            }
+        }
+
+        for (int ch = 0; ch < nodeInputs; ++ch)
+            inPointers[static_cast<size_t>(ch)] = runtimeNode.inputBuffer.getWritePointer(ch);
+        for (int ch = 0; ch < nodeOutputs; ++ch)
+            outPointers[static_cast<size_t>(ch)] = runtimeNode.buffer.getWritePointer(ch);
 
         ProcessContext context {
             runtimeNode.buffer,
             inPointers.data(),
             outPointers.data(),
-            numChannels,
-            numChannels,
+            nodeInputs,
+            nodeOutputs,
             runtime->sampleRate,
             runtime->blockSize,
             numSamples
