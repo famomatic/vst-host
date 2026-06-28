@@ -44,8 +44,8 @@ namespace
     constexpr int kPluginEditorMinHeight = 50;
     constexpr int kPluginEditorMaxWidth = 4096;
     constexpr int kPluginEditorMaxHeight = 3072;
-    constexpr int kPluginSettingsMinWidth = 440;
-    constexpr int kPluginSettingsMinHeight = 300;
+    constexpr int kPluginSettingsMinWidth = 480;
+    constexpr int kPluginSettingsMinHeight = 460;
     constexpr int kPluginSettingsMaxWidth = 2048;
     constexpr int kPluginSettingsMaxHeight = 1400;
 
@@ -72,19 +72,20 @@ namespace
         if (preferredContentHeight <= 1)
             preferredContentHeight = kPluginEditorMinHeight;
 
-        int minContentWidth = editorResizable ? 1 : preferredContentWidth;
-        int minContentHeight = editorResizable ? 1 : preferredContentHeight;
-        int maxContentWidth = kPluginEditorMaxWidth;
-        int maxContentHeight = kPluginEditorMaxHeight;
-        int constrainerMinWidth = 0;
-        int constrainerMinHeight = 0;
+        // For non-resizable editors the window is fixed to the editor's
+        // preferred size. For resizable ones, clamp the user-resize range to
+        // the editor minimum/maximum so the content never gets clipped.
+        int minContentWidth = editorResizable ? kPluginEditorMinWidth : preferredContentWidth;
+        int minContentHeight = editorResizable ? kPluginEditorMinHeight : preferredContentHeight;
+        int maxContentWidth = editorResizable ? kPluginEditorMaxWidth : preferredContentWidth;
+        int maxContentHeight = editorResizable ? kPluginEditorMaxHeight : preferredContentHeight;
 
         if (auto* audioProcessorEditor = dynamic_cast<juce::AudioProcessorEditor*>(&editorComponent))
         {
             if (auto* constrainer = audioProcessorEditor->getConstrainer())
             {
-                constrainerMinWidth = constrainer->getMinimumWidth();
-                constrainerMinHeight = constrainer->getMinimumHeight();
+                const int constrainerMinWidth = constrainer->getMinimumWidth();
+                const int constrainerMinHeight = constrainer->getMinimumHeight();
 
                 if (constrainerMinWidth > 0)
                     minContentWidth = juce::jmax(minContentWidth, constrainerMinWidth);
@@ -102,28 +103,14 @@ namespace
             }
         }
 
-        if (editorResizable)
-        {
-            if (constrainerMinWidth <= 0)
-            {
-                const int fallbackWidth = preferredContentWidth > 1 ? juce::jmin(preferredContentWidth, kPluginEditorMinWidth)
-                                                                    : kPluginEditorMinWidth;
-                minContentWidth = juce::jmax(minContentWidth, fallbackWidth);
-            }
+        // Keep the preferred size inside the resolved limits so the dialog
+        // opens at the editor's requested size instead of collapsing to the
+        // minimum, which previously caused the 'opens at minimum size' bug.
+        preferredContentWidth = juce::jlimit(minContentWidth, maxContentWidth, preferredContentWidth);
+        preferredContentHeight = juce::jlimit(minContentHeight, maxContentHeight, preferredContentHeight);
 
-            if (constrainerMinHeight <= 0)
-            {
-                const int fallbackHeight = preferredContentHeight > 1 ? juce::jmin(preferredContentHeight, kPluginEditorMinHeight)
-                                                                      : kPluginEditorMinHeight;
-                minContentHeight = juce::jmax(minContentHeight, fallbackHeight);
-            }
-        }
-
-        preferredContentWidth = juce::jmax(preferredContentWidth, minContentWidth);
-        preferredContentHeight = juce::jmax(preferredContentHeight, minContentHeight);
-
-        const int resolvedMaxContentWidth = maxContentWidth > 0 ? juce::jmax(minContentWidth, maxContentWidth) : std::numeric_limits<int>::max();
-        const int resolvedMaxContentHeight = maxContentHeight > 0 ? juce::jmax(minContentHeight, maxContentHeight) : std::numeric_limits<int>::max();
+        const int resolvedMaxContentWidth = juce::jmax(minContentWidth, maxContentWidth);
+        const int resolvedMaxContentHeight = juce::jmax(minContentHeight, maxContentHeight);
 
         const int targetContentWidth = juce::jlimit(minContentWidth, resolvedMaxContentWidth, preferredContentWidth);
         const int targetContentHeight = juce::jlimit(minContentHeight, resolvedMaxContentHeight, preferredContentHeight);
@@ -684,7 +671,9 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
             {
                 auto* editorComponent = editor.get();
                 auto* audioProcessorEditor = dynamic_cast<juce::AudioProcessorEditor*>(editorComponent);
-                const bool editorResizable = audioProcessorEditor != nullptr && audioProcessorEditor->isResizable();
+                const bool editorResizable = audioProcessorEditor != nullptr
+                                              ? audioProcessorEditor->isResizable()
+                                              : plugin->isEditorResizable();
 
                 const auto sizing = calculatePluginEditorSizing(*editorComponent, editorResizable);
 
@@ -730,11 +719,12 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
                                                                                   });
 
     auto* settingsComponentPtr = settingsComponent.get();
-    const int settingsMinWidth = juce::jmax(settingsComponentPtr->getWidth(), kPluginSettingsMinWidth);
-    const int settingsMinHeight = juce::jmax(settingsComponentPtr->getHeight(), kPluginSettingsMinHeight);
-
-    if (settingsComponentPtr->getWidth() != settingsMinWidth || settingsComponentPtr->getHeight() != settingsMinHeight)
-        settingsComponentPtr->setSize(settingsMinWidth, settingsMinHeight);
+    // The component sizes itself in its constructor; respect that and only
+    // clamp to a sane minimum so tiny content does not collapse the dialog.
+    const int contentWidth = juce::jmax(settingsComponentPtr->getWidth(), kPluginSettingsMinWidth);
+    const int contentHeight = juce::jmax(settingsComponentPtr->getHeight(), kPluginSettingsMinHeight);
+    if (settingsComponentPtr->getWidth() != contentWidth || settingsComponentPtr->getHeight() != contentHeight)
+        settingsComponentPtr->setSize(contentWidth, contentHeight);
 
     juce::DialogWindow::LaunchOptions options;
     options.content.setOwned(settingsComponent.release());
@@ -748,12 +738,19 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
 
     if (auto* dialog = options.launchAsync())
     {
-        const int settingsMaxWidth = juce::jmax(settingsMinWidth, kPluginSettingsMaxWidth);
-        const int settingsMaxHeight = juce::jmax(settingsMinHeight, kPluginSettingsMaxHeight);
-        dialog->setResizeLimits(settingsMinWidth, settingsMinHeight, settingsMaxWidth, settingsMaxHeight);
-        const auto currentBounds = dialog->getBounds();
-        dialog->setBounds(currentBounds.withSizeKeepingCentre(juce::jmax(currentBounds.getWidth(), settingsMinWidth),
-                                                              juce::jmax(currentBounds.getHeight(), settingsMinHeight)));
+        // Force the dialog window to wrap the content component exactly,
+        // otherwise launchAsync may open at a stale/default size and clip it.
+        if (auto* content = dialog->getContentComponent())
+        {
+            const auto contentBorder = dialog->getContentComponentBorder();
+            const auto windowBorder = dialog->getBorderThickness();
+            const int targetWidth = content->getWidth() + contentBorder.getLeftAndRight() + windowBorder.getLeftAndRight();
+            const int targetHeight = content->getHeight() + contentBorder.getTopAndBottom() + windowBorder.getTopAndBottom();
+            const auto bounds = dialog->getBounds();
+            dialog->setBounds(bounds.withSizeKeepingCentre(targetWidth, targetHeight));
+        }
+        dialog->setResizeLimits(kPluginSettingsMinWidth, kPluginSettingsMinHeight,
+                                kPluginSettingsMaxWidth, kPluginSettingsMaxHeight);
     }
 }
 

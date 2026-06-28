@@ -9,18 +9,19 @@ namespace host::plugin::vst3editor
 namespace
 {
 class Vst3EditorComponent final : public juce::Component,
+                                  private juce::Timer,
                                   public Steinberg::IPlugFrame
 {
-public:
+    public:
     Vst3EditorComponent(const std::function<Steinberg::IPlugView*()>& createViewIn,
                         const std::function<void(Steinberg::IPlugView*)>& releaseViewIn)
-        : createView(createViewIn),
-          releaseView(releaseViewIn)
-    {
-        setOpaque(false);
-        ensureView();
-        adjustToInitialSize();
-    }
+            : createView(createViewIn),
+              releaseView(releaseViewIn)
+        {
+            setOpaque(false);
+            ensureView();
+            adjustToInitialSize();
+        }
 
     ~Vst3EditorComponent() override
     {
@@ -63,7 +64,11 @@ public:
     void resized() override
     {
         juce::Component::resized();
-        if (view && attached)
+        // Keep the plug-in view's logical size in sync with the component even
+        // before the native view is attached, otherwise an early setSize() from
+        // the host leaves the embedded view at its initial size and the content
+        // appears clipped inside a correctly-sized window.
+        if (view)
         {
             Steinberg::ViewRect rect { 0, 0, getWidth(), getHeight() };
             view->onSize(&rect);
@@ -89,6 +94,17 @@ public:
 
     Steinberg::uint32 PLUGIN_API addRef() override { return 1; }
     Steinberg::uint32 PLUGIN_API release() override { return 1; }
+
+    void timerCallback() override
+    {
+        // Retries attaching the plug-in view once the native peer is ready.
+        if (attached || ! isShowing())
+        {
+            stopTimer();
+            return;
+        }
+        attachIfPossible();
+    }
 
     Steinberg::tresult PLUGIN_API resizeView(Steinberg::IPlugView* requestedView, Steinberg::ViewRect* newSize) override
     {
@@ -160,6 +176,15 @@ private:
         if (! view)
             return;
 
+        // The peer (native window) may not exist yet when the component is
+        // first added to a dialog. Poll until it appears, then attach.
+        if (getPeer() == nullptr)
+        {
+            if (! isTimerRunning())
+                startTimerHz(30);
+            return;
+        }
+
         if (auto* peer = getPeer())
         {
             void* nativeHandle = peer->getNativeHandle();
@@ -185,6 +210,7 @@ private:
                 updateScaleFactor();
                 Steinberg::ViewRect rect { 0, 0, getWidth(), getHeight() };
                 view->onSize(&rect);
+                stopTimer();
             }
         }
     }
@@ -194,6 +220,7 @@ private:
         if (! view || ! attached)
             return;
 
+        stopTimer();
         view->setFrame(nullptr);
         view->removed();
         attached = false;
@@ -241,4 +268,3 @@ std::unique_ptr<juce::Component> createEditorComponent(
     return editor;
 }
 } // namespace host::plugin::vst3editor
-

@@ -715,6 +715,11 @@ namespace
 
         [[nodiscard]] bool hasEditor() const override { return controller != nullptr; }
 
+        [[nodiscard]] bool isEditorResizable() const override
+        {
+            return controller != nullptr && editorResizableSupported;
+        }
+
         std::unique_ptr<juce::Component> createEditorComponent() override
         {
             return vst3editor::createEditorComponent(
@@ -972,6 +977,7 @@ namespace
         int maxOutputs { 0 };
         bool controllerInitialized { false };
         bool connectionPointsConnected { false };
+        bool editorResizableSupported { false };
         Steinberg::IPtr<SimpleHostApplication> hostContext;
         Steinberg::IPtr<SimpleComponentHandler> componentHandler;
         std::unique_ptr<EventList> inputEvents_;
@@ -984,7 +990,9 @@ namespace
             if (! controller)
                 return nullptr;
 
-            return controller->createView(Steinberg::Vst::ViewType::kEditor);
+            auto* view = controller->createView(Steinberg::Vst::ViewType::kEditor);
+            editorResizableSupported = (view != nullptr && view->canResize() == Steinberg::kResultTrue);
+            return view;
         }
 
         void releaseEditorView(Steinberg::IPlugView* viewToRelease)

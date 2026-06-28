@@ -1,4 +1,4 @@
-#include "gui/PluginSettingsComponent.h"
+﻿#include "gui/PluginSettingsComponent.h"
 
 #include <filesystem>
 #include <utility>
@@ -13,8 +13,8 @@ using host::i18n::tr;
 
 namespace
 {
-    constexpr int kDefaultWidth = 440;
-    constexpr int kDefaultHeight = 300;
+    constexpr int kDefaultWidth = 480;
+    constexpr int kDefaultHeight = 460;
     constexpr int kLabelWidth = 150;
     constexpr int kRowHeight = 28;
     constexpr int kVerticalGap = 8;
@@ -37,14 +37,12 @@ PluginSettingsComponent::PluginSettingsComponent(std::shared_ptr<host::graph::Gr
                                                  host::graph::GraphEngine::NodeId nodeId,
                                                  std::function<void()> onChanged)
     : graph(std::move(graphEngine)),
-      targetId(nodeId),
-      onSettingsChanged(std::move(onChanged))
-{
-    setSize(kDefaultWidth, kDefaultHeight);
-
-    nameLabel.setText(tr("plugin.settings.name"), juce::dontSendNotification);
-    nameLabel.setJustificationType(juce::Justification::centredLeft);
-    addAndMakeVisible(nameLabel);
+        targetId(nodeId),
+        onSettingsChanged(std::move(onChanged))
+    {
+        nameLabel.setText(tr("plugin.settings.name"), juce::dontSendNotification);
+        nameLabel.setJustificationType(juce::Justification::centredLeft);
+        addAndMakeVisible(nameLabel);
 
     nameEditor.setSelectAllWhenFocused(true);
     nameEditor.onReturnKey = [this]() { commitNameChange(); };
@@ -107,12 +105,16 @@ PluginSettingsComponent::PluginSettingsComponent(std::shared_ptr<host::graph::Gr
     savePresetButton.onClick = [this]() { savePreset(); };
     addAndMakeVisible(savePresetButton);
 
-    loadPresetButton.setButtonText(tr("plugin.settings.loadPreset"));
-    loadPresetButton.onClick = [this]() { loadPreset(); };
-    addAndMakeVisible(loadPresetButton);
+        loadPresetButton.setButtonText(tr("plugin.settings.loadPreset"));
+        loadPresetButton.onClick = [this]() { loadPreset(); };
+        addAndMakeVisible(loadPresetButton);
 
-    refresh();
-}
+        // Size last so resized() lays out the already-added children and the
+        // DialogWindow picks up the correct content bounds.
+        setSize(kDefaultWidth, kDefaultHeight);
+
+        refresh();
+    }
 
 void PluginSettingsComponent::refresh()
 {
@@ -312,15 +314,35 @@ void PluginSettingsComponent::openEditor()
         return;
     }
 
+    // Respect the plug-in's own resize capability; forcing resizable=true for
+    // non-resizable editors left the host and plug-in out of sync, which
+    // caused some editors to render blank or refuse to open.
+    const bool editorResizable = plugin->isEditorResizable();
+
     juce::DialogWindow::LaunchOptions options;
     options.content.setOwned(editor.release());
     options.dialogTitle = juce::String(vstNode->name());
     options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
     options.escapeKeyTriggersCloseButton = true;
-    options.resizable = true;
+    options.resizable = editorResizable;
+    options.useBottomRightCornerResizer = editorResizable;
     options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
-    options.launchAsync();
+    if (auto* dialog = options.launchAsync())
+    {
+        dialog->setResizable(editorResizable, editorResizable);
+        // Wrap the dialog tightly around the editor's preferred size so a
+        // stale/default window size never clips the content.
+        if (auto* content = dialog->getContentComponent())
+        {
+            const auto contentBorder = dialog->getContentComponentBorder();
+            const auto windowBorder = dialog->getBorderThickness();
+            const int targetWidth = content->getWidth() + contentBorder.getLeftAndRight() + windowBorder.getLeftAndRight();
+            const int targetHeight = content->getHeight() + contentBorder.getTopAndBottom() + windowBorder.getTopAndBottom();
+            const auto bounds = dialog->getBounds();
+            dialog->setBounds(bounds.withSizeKeepingCentre(targetWidth, targetHeight));
+        }
+    }
 }
 
 void PluginSettingsComponent::savePreset()

@@ -38,6 +38,9 @@ namespace host::plugin
         virtual bool setState(const std::uint8_t* data, std::size_t len) = 0;
         virtual bool queryRuntimeInfo(PluginInfo& ioInfo) const { juce::ignoreUnused(ioInfo); return false; }
         [[nodiscard]] virtual bool hasEditor() const { return false; }
+        // Reports whether the hosted editor supports live resizing. Hosts use this
+        // to decide if the editor dialog should be user-resizable and to size it.
+        [[nodiscard]] virtual bool isEditorResizable() const { return false; }
         virtual std::unique_ptr<juce::Component> createEditorComponent() { return {}; }
     };
 
