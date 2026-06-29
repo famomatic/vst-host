@@ -16,6 +16,10 @@ struct ProcessContext
     double sampleRate = 0.0;
     int blockSize = 0;
     int numFrames = 0;
+    // ASIO/WASAPI host timestamp in nanoseconds, when provided by the device
+    // callback. nullptr when the device does not supply one. Forwarded to VST
+    // plug-ins so time-aware effects (delays, sync) stay sample-accurate.
+    const std::uint64_t* hostTimeNs = nullptr;
 };
 
 class Node

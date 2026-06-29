@@ -43,7 +43,10 @@ public:
 
     void setEngineFormat(double sampleRate, int blockSize);
     void prepare();
-    [[nodiscard]] int process(juce::AudioBuffer<float>& buffer);
+    // hostTimeNs optional: when provided by the device callback (ASIO), it is
+    // forwarded into each node's ProcessContext so time-aware plugins stay in
+    // sync with the audio hardware clock.
+    [[nodiscard]] int process(juce::AudioBuffer<float>& buffer, const std::uint64_t* hostTimeNs = nullptr);
 
     [[nodiscard]] std::vector<NodeId> getSchedule() const;
     [[nodiscard]] std::vector<NodeId> getNodeIds() const;

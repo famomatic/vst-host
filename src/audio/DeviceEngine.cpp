@@ -115,6 +115,10 @@ namespace host::audio
         juce::ignoreUnused(context);
         clearOutputs(outputChannelData, numOutputChannels, numSamples);
 
+        // ASIO/WASAPI may supply a high-resolution host timestamp; forward it
+        // so time-aware plugins (delays, sync) can lock to the hardware clock.
+        const std::uint64_t* hostTimeNs = (context.hostTimeNs != nullptr) ? context.hostTimeNs : nullptr;
+
         auto state = processingState_.load(std::memory_order_acquire);
         if (! state || numSamples <= 0 || state->engineBuffer.getNumChannels() == 0)
             return;
@@ -150,7 +154,7 @@ namespace host::audio
 
             if (graph)
             {
-                produced = graph->process(state->engineBuffer);
+                produced = graph->process(state->engineBuffer, hostTimeNs);
                 if (produced <= 0)
                 {
                     state->engineBuffer.clear();

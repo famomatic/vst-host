@@ -334,7 +334,7 @@ void GraphEngine::prepare()
     }
 }
 
-int GraphEngine::process(juce::AudioBuffer<float>& buffer)
+int GraphEngine::process(juce::AudioBuffer<float>& buffer, const std::uint64_t* hostTimeNs)
 {
     if (processingSuspended_.load(std::memory_order_acquire))
     {
@@ -466,7 +466,8 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer)
             nodeOutputs,
             runtime->sampleRate,
             runtime->blockSize,
-            numSamples
+            numSamples,
+            hostTimeNs
         };
 
         if (runtimeNode.node != nullptr)
