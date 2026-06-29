@@ -10,6 +10,7 @@
 #include "graph/Nodes/Merge.h"
 #include "graph/Nodes/Mix.h"
 #include "graph/Nodes/Split.h"
+#include "graph/Nodes/ChannelTap.h"
 #include "graph/Nodes/VstFx.h"
 
 namespace host::persist

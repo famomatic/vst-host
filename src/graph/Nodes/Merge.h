@@ -25,7 +25,54 @@ namespace host::graph::nodes
             if (frames == 0 || outputs == 0 || context.outputChannels == nullptr)
                 return;
 
-            if (context.inputChannels == nullptr || inputs == 0 || frames > preparedBlockSize_)
+            if (context.inputChannels == nullptr || inputs == 0)
+            {
+                for (int outCh = 0; outCh < outputs; ++outCh)
+                {
+                    if (auto* dest = context.outputChannels[outCh])
+                        juce::FloatVectorOperations::clear(dest, frames);
+                }
+                return;
+            }
+
+            // Multi-input merge: map input channels 1:1 onto output channels
+            // so two mono chains (L + R) recombine into a stereo pair. Inputs
+            // beyond the output count are summed into the last output; extra
+            // outputs repeat the final input. This keeps Split -> Tap(L) /
+            // Tap(R) -> chains -> Merge round-trippable while still supporting
+            // the classic mono-sum behaviour when only one input is present.
+            if (inputs >= 2)
+            {
+                for (int outCh = 0; outCh < outputs; ++outCh)
+                {
+                    auto* dest = context.outputChannels[outCh];
+                    if (dest == nullptr)
+                        continue;
+
+                    const int mappedIn = std::min(outCh, inputs - 1);
+                    const auto* source = context.inputChannels[mappedIn];
+
+                    // Sum any further inputs that also map to this output
+                    // (inputs > outputs case) so nothing is silently dropped.
+                    if (source != nullptr)
+                        juce::FloatVectorOperations::copy(dest, source, frames);
+                    else
+                        juce::FloatVectorOperations::clear(dest, frames);
+
+                    for (int extraIn = mappedIn + outputs; extraIn < inputs; extraIn += outputs)
+                    {
+                        const auto* extra = context.inputChannels[extraIn];
+                        if (extra != nullptr)
+                            juce::FloatVectorOperations::add(dest, extra, frames);
+                    }
+                }
+                return;
+            }
+
+            // Single input: up-mix to every output (mono -> stereo), summed
+            // to mono when multiple inputs collapse to one. Kept as the
+            // legacy path so existing mono-sum projects behave unchanged.
+            if (frames > preparedBlockSize_)
             {
                 for (int outCh = 0; outCh < outputs; ++outCh)
                 {
@@ -37,32 +84,9 @@ namespace host::graph::nodes
 
             std::fill(monoScratch_.begin(), monoScratch_.begin() + frames, 0.0f);
 
-            int contributors = 0;
-            for (int inCh = 0; inCh < inputs; ++inCh)
-            {
-                const auto* source = context.inputChannels[inCh];
-                if (source == nullptr)
-                    continue;
-
-                juce::FloatVectorOperations::add(monoScratch_.data(), source, frames);
-                ++contributors;
-            }
-
-            if (contributors == 0)
-            {
-                for (int outCh = 0; outCh < outputs; ++outCh)
-                {
-                    if (auto* dest = context.outputChannels[outCh])
-                        juce::FloatVectorOperations::clear(dest, frames);
-                }
-                return;
-            }
-
-            if (contributors > 1)
-            {
-                const float gain = 1.0f / static_cast<float>(contributors);
-                juce::FloatVectorOperations::multiply(monoScratch_.data(), gain, frames);
-            }
+            const auto* source = context.inputChannels[0];
+            if (source != nullptr)
+                juce::FloatVectorOperations::copy(monoScratch_.data(), source, frames);
 
             for (int outCh = 0; outCh < outputs; ++outCh)
             {

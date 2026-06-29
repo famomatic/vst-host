@@ -10,6 +10,7 @@
 #include "graph/Nodes/Merge.h"
 #include "graph/Nodes/Mix.h"
 #include "graph/Nodes/Split.h"
+#include "graph/Nodes/ChannelTap.h"
 
 #include <algorithm>
 #include <cctype>
@@ -39,6 +40,7 @@ namespace
             { "Mix",      "Mix",       "Routing", 2, 2 },
             { "Split",    "Split",     "Routing", 2, 2 },
             { "Merge",    "Merge",     "Routing", 2, 2 },
+            { "ChannelTap","Channel Tap","Routing", 2, 2 },
         };
         return list;
     }
@@ -73,6 +75,8 @@ std::unique_ptr<Node> NodeFactory::create(const std::string& typeId)
         return std::make_unique<nodes::SplitNode>();
     if (n == "merge")
         return std::make_unique<nodes::MergeNode>();
+    if (n == "channeltap" || n == "channel tap" || n == "tap")
+        return std::make_unique<nodes::ChannelTapNode>();
 
     return nullptr;
 }
