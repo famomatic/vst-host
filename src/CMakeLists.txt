@@ -9,8 +9,14 @@ set(SOURCES
     ${SRC_DIR}/host/PluginHost.Vst2.cpp
     ${SRC_DIR}/host/PluginScanner.cpp
     ${SRC_DIR}/graph/GraphEngine.cpp
+    ${SRC_DIR}/graph/NodeFactory.cpp
+    ${SRC_DIR}/graph/Node.cpp
     ${SRC_DIR}/graph/Nodes/VstFx.cpp
     ${SRC_DIR}/graph/Nodes/GainNode.cpp
+    ${SRC_DIR}/graph/Nodes/EqualizerNode.cpp
+    ${SRC_DIR}/graph/Nodes/CompressorNode.cpp
+    ${SRC_DIR}/graph/Nodes/ReverbNode.cpp
+    ${SRC_DIR}/graph/Nodes/DelayNode.cpp
     ${SRC_DIR}/gui/ConsoleView.cpp
     ${SRC_DIR}/gui/ConsoleWindow.cpp
     ${SRC_DIR}/gui/MainWindow.cpp
@@ -19,11 +25,13 @@ set(SOURCES
     ${SRC_DIR}/gui/Preferences.cpp
     ${SRC_DIR}/gui/PluginBrowser.cpp
     ${SRC_DIR}/gui/PluginSettingsComponent.cpp
+    ${SRC_DIR}/gui/ChainPresetPanel.cpp
     ${SRC_DIR}/util/ConsoleLogger.cpp
     ${SRC_DIR}/util/Localization.cpp
     ${SRC_DIR}/persist/Config.cpp
     ${SRC_DIR}/persist/Project.cpp
     ${SRC_DIR}/persist/Preset.cpp
+    ${SRC_DIR}/persist/ChainPreset.cpp
     ${VST3_SDK_DIR}/public.sdk/source/common/memorystream.cpp
 )
 

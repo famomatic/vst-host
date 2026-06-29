@@ -20,10 +20,27 @@
 #include "graph/Nodes/Mix.h"
 #include "graph/Nodes/Split.h"
 #include "graph/Nodes/VstFx.h"
+#include "graph/Node.h"
 #include "gui/ConsoleWindow.h"
 #include "gui/PluginSettingsComponent.h"
 #include "persist/Project.h"
 #include "util/Localization.h"
+
+    namespace
+    {
+    // DocumentWindow that reports close via a callback, since closeButtonPressed
+    // is a virtual override rather than a public member.
+    class CloseableDocumentWindow : public juce::DocumentWindow
+    {
+    public:
+        using CloseCallback = std::function<void()>;
+        CloseableDocumentWindow(const juce::String& name, juce::Colour bg, int buttons, CloseCallback cb)
+            : juce::DocumentWindow(name, bg, buttons), onClose(std::move(cb)) {}
+        void closeButtonPressed() override { if (onClose) onClose(); }
+    private:
+        CloseCallback onClose;
+    };
+    }
 
 namespace
 {
@@ -37,7 +54,8 @@ namespace
         menuRescan,
         menuExit,
         menuHelpShow,
-        menuViewConsole
+        menuViewConsole,
+        menuViewChainPresets
     };
 
     constexpr int kPluginEditorMinWidth = 50;
@@ -342,6 +360,10 @@ MainWindow::MainWindow()
     {
         openPluginSettings(id);
     });
+    graphView.setOnRequestAddNode([this](const std::string& typeId)
+    {
+        addBuiltinNodeToGraph(typeId);
+    });
 
     leftPanel.addAndMakeVisible(pluginBrowser);
     rightPanel.addAndMakeVisible(graphView);
@@ -436,11 +458,13 @@ juce::PopupMenu MainWindow::getMenuForIndex(int menuIndex, const juce::String&)
     {
         menu.addItem(menuRescan, host::i18n::tr("menu.edit.rescan"));
     }
-    else if (menuIndex == 2)
-    {
-        const bool consoleVisible = consoleWindow != nullptr && consoleWindow->isVisible();
-        menu.addItem(menuViewConsole, host::i18n::tr("menu.view.console"), true, consoleVisible);
-    }
+   else if (menuIndex == 2)
+   {
+       const bool consoleVisible = consoleWindow != nullptr && consoleWindow->isVisible();
+       menu.addItem(menuViewConsole, host::i18n::tr("menu.view.console"), true, consoleVisible);
+       const bool chainVisible = chainPresetWindow != nullptr && chainPresetWindow->isVisible();
+       menu.addItem(menuViewChainPresets, host::i18n::tr("menu.view.chainPresets"), true, chainVisible);
+   }
     else if (menuIndex == 3)
     {
         menu.addItem(menuHelpShow, host::i18n::tr("menu.help.show"));
@@ -464,8 +488,9 @@ void MainWindow::menuItemSelected(int menuItemID, int)
             break;
         case menuExit:      exitApplication(); break;
         case menuHelpShow:  showHelpDialog(); break;
-        case menuViewConsole: toggleConsoleWindow(); break;
-        default:
+       case menuViewConsole: toggleConsoleWindow(); break;
+       case menuViewChainPresets: toggleChainPresetPanel(); break;
+       default:
             break;
     }
 }
@@ -653,15 +678,147 @@ void MainWindow::showConsoleWindow()
     consoleWindow->toFront(true);
 }
 
+void MainWindow::toggleChainPresetPanel()
+{
+    if (chainPresetWindow != nullptr && chainPresetWindow->isVisible())
+    {
+        chainPresetWindow->setVisible(false);
+        menuItemsChanged();
+        return;
+    }
+
+    if (chainPresetWindow == nullptr)
+    {
+        const auto presetDir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                                    .getChildFile("VST Host")
+                                    .getChildFile("Chain Presets");
+
+        chainPresetPanel = std::make_unique<host::gui::ChainPresetPanel>(graphEngine, presetDir, [this]()
+        {
+            updateChainPresetPanel();
+        });
+
+        chainPresetWindow = std::make_unique<CloseableDocumentWindow>(host::i18n::tr("chainPreset.windowTitle"),
+                                                                      juce::Colours::darkgrey,
+                                                                      juce::DocumentWindow::closeButton,
+                                                                      [this]()
+                                                                      {
+                                                                          if (chainPresetWindow)
+                                                                              chainPresetWindow->setVisible(false);
+                                                                          menuItemsChanged();
+                                                                      });
+        chainPresetWindow->setUsingNativeTitleBar(true);
+        chainPresetWindow->setContentOwned(chainPresetPanel.release(), true);
+        chainPresetWindow->setResizable(true, false);
+        chainPresetWindow->centreWithSize(320, 420);
+    }
+
+    if (! chainPresetWindow->isVisible())
+        chainPresetWindow->setVisible(true);
+
+    updateChainPresetPanel();
+    chainPresetWindow->toFront(true);
+    menuItemsChanged();
+}
+
+void MainWindow::updateChainPresetPanel()
+{
+    if (chainPresetWindow != nullptr)
+    {
+        if (auto* content = dynamic_cast<host::gui::ChainPresetPanel*>(chainPresetWindow->getContentComponent()))
+            content->refresh();
+    }
+}
+
 void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
 {
     if (id.isNull() || ! graphEngine)
         return;
 
-    auto node = graphEngine->getNode(id);
-    auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
-    if (vstNode == nullptr)
-        return;
+   auto node = graphEngine->getNode(id);
+   auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
+   if (vstNode == nullptr)
+   {
+       // Built-in effect node: show a generic parameter panel built from
+       // the node's exposed parameters. This lets the user tweak EQ bands,
+       // compressor thresholds, reverb mix, etc. without a full editor.
+       if (! node)
+           return;
+
+       auto params = node->getParameters();
+       if (params.empty())
+           return;
+
+       struct EffectParameterPanel : public juce::Component
+       {
+           EffectParameterPanel(std::shared_ptr<host::graph::Node> nodeIn,
+                                std::vector<host::graph::NodeParameter> paramsIn)
+               : node(std::move(nodeIn)), params(std::move(paramsIn))
+           {
+               const int rowHeight = 32;
+               const int labelWidth = 140;
+               const int padding = 12;
+
+               int y = padding;
+               sliders.reserve(params.size());
+               labels.reserve(params.size());
+               for (auto& p : params)
+               {
+                   auto* label = new juce::Label({}, p.displayName);
+                   label->setJustificationType(juce::Justification::centredLeft);
+                   label->setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
+                   addAndMakeVisible(label);
+                   label->setBounds(padding, y, labelWidth, rowHeight);
+
+                   auto* slider = new juce::Slider(juce::Slider::LinearHorizontal, juce::Slider::TextBoxRight);
+                   slider->setRange(p.min, p.max, 0.01);
+                   slider->setValue(p.value, juce::dontSendNotification);
+                   slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, rowHeight - 4);
+                   addAndMakeVisible(slider);
+                   slider->setBounds(padding + labelWidth + 4, y, 320, rowHeight);
+
+                   slider->onValueChange = [this, idx = sliders.size()]() mutable
+                   {
+                      if (idx < params.size() && sliders[idx])
+                      {
+                          params[idx].value = sliders[idx]->getValue();
+                          // Live UI edits go through the lock-free queue so the
+                          // audio thread applies them at the next block boundary
+                          // rather than racing on the atomics mid-block.
+                          if (node)
+                              node->requestParameterChange(params[idx].id, params[idx].value);
+                      }
+                   };
+
+                   labels.emplace_back(label);
+                   sliders.emplace_back(slider);
+                   y += rowHeight + 4;
+               }
+
+               setSize(padding * 2 + labelWidth + 4 + 320 + 80, y + padding);
+           }
+
+           void paint(juce::Graphics& g) override { g.fillAll(juce::Colours::darkgrey.darker(0.4f)); }
+
+           std::shared_ptr<host::graph::Node> node;
+           std::vector<host::graph::NodeParameter> params;
+           std::vector<std::unique_ptr<juce::Label>> labels;
+           std::vector<std::unique_ptr<juce::Slider>> sliders;
+       };
+
+       auto panel = std::make_unique<EffectParameterPanel>(node, std::move(params));
+
+       juce::DialogWindow::LaunchOptions options;
+       options.content.setOwned(panel.release());
+       options.dialogTitle = juce::String(node->name());
+       options.componentToCentreAround = this;
+       options.useNativeTitleBar = true;
+       options.escapeKeyTriggersCloseButton = true;
+       options.resizable = false;
+       options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
+       options.launchAsync();
+       return;
+   }
 
     if (auto* plugin = vstNode->plugin())
     {

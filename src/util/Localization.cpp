@@ -41,6 +41,12 @@ namespace
         strings.set("graph.menu.focus", "Focus Selected Node");
         strings.set("graph.menu.resetView", "Reset View");
         strings.set("graph.menu.clearSelection", "Clear Selection");
+        strings.set("graph.menu.addNode", "Add Node");
+        strings.set("chainPreset.saveTitle", "Save Chain Preset");
+        strings.set("chainPreset.errorTitle", "Chain Preset Error");
+        strings.set("chainPreset.saveFailed", "Failed to save the chain preset.");
+        strings.set("chainPreset.windowTitle", "Chain Presets");
+        strings.set("menu.view.chainPresets", "Chain Presets");
         strings.set("graph.context.openPluginSettings", "Open plugin settings");
         strings.set("graph.context.clearOutgoing", "Clear outgoing connections");
         strings.set("graph.context.clearIncoming", "Clear incoming connections");
@@ -166,6 +172,12 @@ namespace
         strings.set("graph.menu.focus", juce::String::fromUTF8("선택 노드로 이동"));
         strings.set("graph.menu.resetView", juce::String::fromUTF8("보기 초기화"));
         strings.set("graph.menu.clearSelection", juce::String::fromUTF8("선택 해제"));
+        strings.set("graph.menu.addNode", juce::String::fromUTF8("노드 추가"));
+        strings.set("chainPreset.saveTitle", juce::String::fromUTF8("체인 프리셋 저장"));
+        strings.set("chainPreset.errorTitle", juce::String::fromUTF8("체인 프리셋 오류"));
+        strings.set("chainPreset.saveFailed", juce::String::fromUTF8("체인 프리셋을 저장하지 못했습니다."));
+        strings.set("chainPreset.windowTitle", juce::String::fromUTF8("체인 프리셋"));
+        strings.set("menu.view.chainPresets", juce::String::fromUTF8("체인 프리셋"));
         strings.set("graph.context.openPluginSettings", juce::String::fromUTF8("플러그인 설정 열기"));
         strings.set("graph.context.clearOutgoing", juce::String::fromUTF8("출력 연결 지우기"));
         strings.set("graph.context.clearIncoming", juce::String::fromUTF8("입력 연결 지우기"));

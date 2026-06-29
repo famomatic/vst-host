@@ -54,24 +54,11 @@ namespace
 
     [[nodiscard]] juce::String nodeTypeFromInstance(const host::graph::Node& node)
     {
-        using namespace host::graph::nodes;
-
-        if (dynamic_cast<const AudioInNode*>(&node) != nullptr)
-            return "AudioIn";
-        if (dynamic_cast<const AudioOutNode*>(&node) != nullptr)
-            return "AudioOut";
-        if (dynamic_cast<const GainNode*>(&node) != nullptr)
-            return "Gain";
-        if (dynamic_cast<const MixNode*>(&node) != nullptr)
-            return "Mix";
-        if (dynamic_cast<const SplitNode*>(&node) != nullptr)
-            return "Split";
-        if (dynamic_cast<const MergeNode*>(&node) != nullptr)
-            return "Merge";
-        if (dynamic_cast<const VstFxNode*>(&node) != nullptr)
-            return "VstFx";
-
-        return juce::String(node.name());
+        // Each node exposes a stable typeId(); use it directly instead of a
+        // growing dynamic_cast chain that has to be touched for every new
+        // effect. Falls back to name() for untyped nodes.
+        const auto id = node.typeId();
+        return id.empty() ? juce::String(node.name()) : juce::String(id);
     }
 
     [[nodiscard]] juce::String pluginFormatToString(host::plugin::PluginFormat format)
@@ -148,6 +135,8 @@ namespace
                         {
                             definition.pluginState.fromBase64Encoding(stateVar.toString());
                         }
+                        if (auto paramsVar = nodeObj->getProperty("parameters"); ! paramsVar.isVoid())
+                            definition.parameters = juce::JSON::toString(paramsVar);
                         nodes.push_back(std::move(definition));
                     }
                 }
@@ -230,8 +219,28 @@ namespace
                         if (instance->getState(stateData) && ! stateData.empty())
                         {
                             juce::MemoryBlock block(stateData.data(), stateData.size());
-                            nodeObj->setProperty("pluginState", block.toBase64Encoding());
+                           nodeObj->setProperty("pluginState", block.toBase64Encoding());
+                       }
+                   }
+               }
+
+                // Serialize exposed parameters for built-in effect nodes
+                // (EQ, Compressor, Reverb, Delay, Gain, ...). VST state is
+                // already captured above via pluginState.
+                if (dynamic_cast<const host::graph::nodes::VstFxNode*>(node.get()) == nullptr)
+                {
+                    const auto params = node->getParameters();
+                    if (! params.empty())
+                    {
+                        juce::Array<juce::var> paramsArray;
+                        for (const auto& p : params)
+                        {
+                            juce::DynamicObject::Ptr pObj(new juce::DynamicObject());
+                            pObj->setProperty("id", juce::String(p.id));
+                            pObj->setProperty("value", p.value);
+                            paramsArray.add(juce::var(pObj.get()));
                         }
+                        nodeObj->setProperty("parameters", juce::var(paramsArray));
                     }
                 }
 

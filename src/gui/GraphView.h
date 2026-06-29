@@ -24,6 +24,7 @@ namespace host::gui
         void focusOnNode(NodeId id);
         void deselectAll();
         void setOnRequestNodeSettings(std::function<void(NodeId)> callback);
+        void setOnRequestAddNode(std::function<void(const std::string& typeId)> callback);
 
         void paint(juce::Graphics& g) override;
         void resized() override;
@@ -66,6 +67,7 @@ namespace host::gui
         std::unordered_map<std::string, NodeComponent*> nodeLookup;
         std::unordered_map<std::string, juce::Point<float>> nodePositions;
         std::function<void(NodeId)> onRequestNodeSettings;
+        std::function<void(const std::string&)> onRequestAddNode;
 
         NodeId selectedNode {};
         juce::Point<float> viewOffset {};

@@ -27,6 +27,7 @@ namespace host::persist
             int outputs { 0 };
             int latency { 0 };
             juce::MemoryBlock pluginState;
+            juce::String parameters; ///< JSON array of NodeParameter for built-in effect nodes
         };
 
         struct ConnectionDefinition

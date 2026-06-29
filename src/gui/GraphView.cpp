@@ -5,10 +5,13 @@
 #include <algorithm>
 #include <cmath>
 #include <exception>
-#include <unordered_set>
 #include <limits>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include "graph/Nodes/VstFx.h"
+#include "graph/NodeFactory.h"
 
 namespace host::gui
 {
@@ -282,6 +285,11 @@ GraphView::~GraphView() = default;
 void GraphView::setOnRequestNodeSettings(std::function<void(NodeId)> callback)
 {
     onRequestNodeSettings = std::move(callback);
+}
+
+void GraphView::setOnRequestAddNode(std::function<void(const std::string&)> callback)
+{
+    onRequestAddNode = std::move(callback);
 }
 
 void GraphView::setGraph(std::shared_ptr<host::graph::GraphEngine> graphEngine)
@@ -611,16 +619,39 @@ void GraphView::showBackgroundMenu(juce::Point<int> screenPosition)
     juce::PopupMenu menu;
     enum MenuAction
     {
-        focusItemId = 1,
-        resetItemId = 2,
-        clearItemId = 3
-    };
+       focusItemId = 1,
+       resetItemId = 2,
+       clearItemId = 3,
+       addNodeBase = 1000
+   };
 
-    if (! selectedNode.isNull())
-        menu.addItem(focusItemId, tr("graph.menu.focus"));
+   if (! selectedNode.isNull())
+       menu.addItem(focusItemId, tr("graph.menu.focus"));
 
-    menu.addItem(resetItemId, tr("graph.menu.resetView"));
-    menu.addItem(clearItemId, tr("graph.menu.clearSelection"));
+    // Add-node submenu, grouped by category via NodeFactory descriptors so
+    // new effect nodes appear here automatically once registered.
+    if (onRequestAddNode)
+    {
+        const auto& descriptors = host::graph::NodeFactory::getDescriptors();
+        std::unordered_map<std::string, juce::PopupMenu> byCategory;
+        std::vector<std::string> categoryOrder;
+        int id = addNodeBase;
+        for (const auto& d : descriptors)
+        {
+            if (byCategory.find(d.category) == byCategory.end())
+                categoryOrder.push_back(d.category);
+            byCategory[d.category].addItem(id++, d.displayName);
+        }
+
+        juce::PopupMenu addMenu;
+        for (const auto& category : categoryOrder)
+            addMenu.addSubMenu(juce::String(category), std::move(byCategory[category]));
+
+        menu.addSubMenu(tr("graph.menu.addNode"), std::move(addMenu));
+    }
+
+   menu.addItem(resetItemId, tr("graph.menu.resetView"));
+   menu.addItem(clearItemId, tr("graph.menu.clearSelection"));
 
     menu.showMenuAsync(juce::PopupMenu::Options().withTargetScreenArea({ screenPosition.x, screenPosition.y, 1, 1 }),
                        [this](int result)
@@ -629,10 +660,18 @@ void GraphView::showBackgroundMenu(juce::Point<int> screenPosition)
                            {
                                case focusItemId: centerOnSelectedNode(); break;
                                case resetItemId: setViewOffset({}); break;
-                               case clearItemId: deselectAll(); break;
-                               default: break;
-                           }
-                       });
+                              case clearItemId: deselectAll(); break;
+                              default:
+                                  if (result >= addNodeBase && onRequestAddNode)
+                                  {
+                                      const auto& descriptors = host::graph::NodeFactory::getDescriptors();
+                                      const auto index = static_cast<size_t>(result - addNodeBase);
+                                      if (index < descriptors.size())
+                                          onRequestAddNode(descriptors[index].typeId);
+                                  }
+                                  break;
+                          }
+                      });
 }
 
 void GraphView::beginConnectionDrag(NodeId id, juce::Point<float> startPosition)
@@ -962,10 +1001,16 @@ bool GraphView::nodeSupportsSettings(NodeId id) const
     if (id.isNull() || ! graph)
         return false;
 
-    if (auto node = graph->getNode(id))
-        return dynamic_cast<host::graph::nodes::VstFxNode*>(node.get()) != nullptr;
+   if (auto node = graph->getNode(id))
+   {
+       // VST nodes always have a settings panel. Built-in effect nodes are
+       // editable when they expose parameters.
+       if (dynamic_cast<host::graph::nodes::VstFxNode*>(node.get()) != nullptr)
+           return true;
+       return ! node->getParameters().empty();
+   }
 
-    return false;
+   return false;
 }
 
 bool GraphView::openNodeSettings(NodeId id)

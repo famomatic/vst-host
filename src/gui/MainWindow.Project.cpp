@@ -10,11 +10,8 @@
 
 #include "graph/Nodes/AudioIn.h"
 #include "graph/Nodes/AudioOut.h"
-#include "graph/Nodes/GainNode.h"
-#include "graph/Nodes/Merge.h"
-#include "graph/Nodes/Mix.h"
-#include "graph/Nodes/Split.h"
 #include "graph/Nodes/VstFx.h"
+#include "graph/NodeFactory.h"
 #include "persist/Project.h"
 #include "util/Localization.h"
 
@@ -108,25 +105,41 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
     auto createNodeForDefinition = [&](const host::persist::Project::NodeDefinition& definition)
         -> std::unique_ptr<host::graph::Node>
     {
-        // Prefer the persisted type field; fall back to the display name when
-        // older project files omit it. Both are normalised for matching.
+        // Built-in nodes (Gain, EQ, Compressor, Reverb, Delay, routing) go
+        // through the factory. Only VST plugins need the bespoke loader below.
         const auto rawType = definition.type.isNotEmpty() ? definition.type : definition.name;
-        const auto normalisedType = rawType.toLowerCase().removeCharacters(" ");
 
-        if (normalisedType == "audioin" || normalisedType == "audioinnode")
-            return std::make_unique<host::graph::nodes::AudioInNode>();
-        if (normalisedType == "audioout" || normalisedType == "audiooutnode")
-            return std::make_unique<host::graph::nodes::AudioOutNode>();
-        if (normalisedType == "gain")
-            return std::make_unique<host::graph::nodes::GainNode>();
-        if (normalisedType == "mix")
-            return std::make_unique<host::graph::nodes::MixNode>();
-        if (normalisedType == "split")
-            return std::make_unique<host::graph::nodes::SplitNode>();
-        if (normalisedType == "merge")
-            return std::make_unique<host::graph::nodes::MergeNode>();
+        if (auto node = host::graph::NodeFactory::createFromPersistedName(rawType.toStdString()))
+        {
+            // Restore saved parameters for effect nodes.
+            if (definition.parameters.isNotEmpty())
+            {
+                // Parameters are stored as JSON in the project; parsed and
+                // applied here so presets and projects share the format.
+                juce::var paramsVar;
+                if (juce::JSON::parse(definition.parameters, paramsVar).wasOk())
+                {
+                    std::vector<host::graph::NodeParameter> params;
+                    if (auto* arr = paramsVar.getArray())
+                    {
+                        for (const auto& item : *arr)
+                        {
+                            if (auto* obj = item.getDynamicObject())
+                            {
+                                host::graph::NodeParameter p;
+                                p.id = obj->getProperty("id").toString().toStdString();
+                                p.value = obj->getProperty("value");
+                                params.push_back(p);
+                            }
+                        }
+                        node->setParameters(params);
+                    }
+                }
+            }
+            return node;
+        }
 
-        const bool looksLikePlugin = normalisedType == "vstfx"
+        const bool looksLikePlugin = rawType.toLowerCase().removeCharacters(" ") == "vstfx"
                                      || definition.pluginPath.isNotEmpty()
                                      || definition.pluginId.isNotEmpty();
 
@@ -473,6 +486,81 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
         {
             // If preparation still fails, let the user fix connections manually.
         }
+    }
+
+   graphView.refreshGraph(true);
+   if (! newNodeId.isNull())
+       graphView.focusOnNode(newNodeId);
+}
+
+void MainWindow::addBuiltinNodeToGraph(const std::string& typeId)
+{
+    auto node = host::graph::NodeFactory::create(typeId);
+    if (! node)
+        return;
+
+    // Audio In / Audio Out are structural and must not be inserted mid-chain.
+    if (typeId == "AudioIn" || typeId == "AudioOut")
+    {
+        try
+        {
+            const auto id = graphEngine->addNode(std::move(node));
+            graphEngine->prepare();
+            graphView.refreshGraph(true);
+            graphView.focusOnNode(id);
+        }
+        catch (const std::exception&)
+        {
+        }
+        return;
+    }
+
+    host::graph::GraphEngine::NodeId newNodeId;
+    try
+    {
+        newNodeId = graphEngine->addNode(std::move(node));
+    }
+    catch (const std::exception&)
+    {
+        return;
+    }
+
+    // Insert between the current chain tail and the output, mirroring how
+    // plugins are added so the effect sits in the signal path immediately.
+    const auto inputId = graphEngine->getInputNode();
+    const auto outputId = graphEngine->getOutputNode();
+
+    std::vector<host::graph::GraphEngine::NodeId> previousSources;
+    for (const auto& connection : graphEngine->getConnections())
+    {
+        if (connection.second == outputId && ! outputId.isNull())
+        {
+            previousSources.push_back(connection.first);
+            graphEngine->disconnect(connection.first, connection.second);
+        }
+    }
+
+    if (previousSources.empty())
+    {
+        if (! inputId.isNull())
+            graphEngine->connect(inputId, newNodeId);
+    }
+    else
+    {
+        for (const auto& source : previousSources)
+            if (source != newNodeId)
+                graphEngine->connect(source, newNodeId);
+    }
+
+    if (! outputId.isNull())
+        graphEngine->connect(newNodeId, outputId);
+
+    try
+    {
+        graphEngine->prepare();
+    }
+    catch (const std::exception&)
+    {
     }
 
     graphView.refreshGraph(true);

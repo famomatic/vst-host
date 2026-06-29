@@ -6,6 +6,7 @@
 #include "graph/GraphEngine.h"
 #include "gui/GraphView.h"
 #include "gui/PluginBrowser.h"
+#include "gui/ChainPresetPanel.h"
 #include "gui/Preferences.h"
 #include "host/PluginScanner.h"
 #include "persist/Config.h"
@@ -42,7 +43,10 @@ private:
     void saveProject();
     void rebuildGraphFromProject(const host::persist::Project& project);
     void addPluginToGraph(const host::plugin::PluginInfo& info);
+    void addBuiltinNodeToGraph(const std::string& typeId);
     void minimiseToTray();
+    void toggleChainPresetPanel();
+    void updateChainPresetPanel();
     void restoreFromTray();
     void toggleVisibilityFromTray();
     void showSettingsFromTray();
@@ -73,6 +77,8 @@ private:
     juce::StretchableLayoutResizerBar resizerBar { &layoutManager, 1, true };
     juce::Component leftPanel;
     juce::Component rightPanel;
+    std::unique_ptr<juce::DocumentWindow> chainPresetWindow;
+    std::unique_ptr<host::gui::ChainPresetPanel> chainPresetPanel;
     std::unique_ptr<TrayIcon> trayIcon;
     std::unique_ptr<host::gui::ConsoleWindow> consoleWindow;
     bool hiddenToTray { false };
