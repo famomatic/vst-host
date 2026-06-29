@@ -103,6 +103,40 @@ namespace host::gui
         audioTab->addAndMakeVisible(blockSizeLabel);
         audioTab->addAndMakeVisible(engineBlockBox);
 
+        // ASIO (and some WASAPI) devices expose a vendor control panel for
+        // hardware buffer / latch / exclusive-mode settings. Without it the
+        // user cannot tune the low-latency path that makes ASIO / WASAPI
+        // exclusive worthwhile, so it is surfaced here directly.
+        controlPanelHint.setJustificationType(juce::Justification::centredLeft);
+        controlPanelHint.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+        audioTab->addAndMakeVisible(controlPanelButton);
+        audioTab->addAndMakeVisible(controlPanelHint);
+        controlPanelButton.onClick = [this]
+        {
+            auto* device = deviceManager.getCurrentAudioDevice();
+            if (device == nullptr || ! device->hasControlPanel())
+                return;
+
+            // showControlPanel() may block (ASIO runs a modal loop). Disable
+            // the button for the duration to avoid re-entrancy.
+            controlPanelButton.setEnabled(false);
+            const auto changed = device->showControlPanel();
+            controlPanelButton.setEnabled(true);
+
+            // ASIO control panels can change buffer size / sample rate behind
+            // our back; re-applying the current setup forces the device to
+            // reopen with the new hardware settings.
+            if (changed)
+            {
+                juce::AudioDeviceManager::AudioDeviceSetup setup;
+                deviceManager.getAudioDeviceSetup(setup);
+                const auto error = deviceManager.setAudioDeviceSetup(setup, true);
+                reportAudioDeviceError("setAudioDeviceSetup(afterControlPanel)", error, true);
+                refreshDeviceLists();
+            }
+        };
+        refreshControlPanelState();
+
         tabs.addTab(tr("preferences.tab.audio"), juce::Colours::grey, audioTab, true);
 
         driverBox.onChange = [this]
@@ -444,13 +478,14 @@ namespace host::gui
 
         if (auto id = findItemIdForText(outputDeviceBox, outputSelection); id != 0)
             outputDeviceBox.setSelectedId(id, juce::dontSendNotification);
-        else
-            outputDeviceBox.setText(outputSelection, juce::dontSendNotification);
+       else
+           outputDeviceBox.setText(outputSelection, juce::dontSendNotification);
 
-        refreshEngineOptions();
-    }
+       refreshEngineOptions();
+       refreshControlPanelState();
+   }
 
-    void PreferencesComponent::refreshEngineOptions()
+   void PreferencesComponent::refreshEngineOptions()
     {
         const juce::ScopedValueSetter<bool> guard(isUpdating, true);
         engineSampleRateBox.clear(juce::dontSendNotification);
@@ -506,6 +541,28 @@ namespace host::gui
         engineBlockBox.setSelectedId(selectedBlockId, juce::dontSendNotification);
     }
 
+    void PreferencesComponent::refreshControlPanelState()
+    {
+        const juce::ScopedValueSetter<bool> guard(isUpdating, true);
+
+        auto* device = deviceManager.getCurrentAudioDevice();
+        const bool supported = (device != nullptr && device->hasControlPanel());
+
+        controlPanelButton.setEnabled(supported);
+        controlPanelButton.setButtonText(tr("preferences.audio.controlPanel"));
+
+        if (supported)
+        {
+            controlPanelHint.setText(tr("preferences.audio.controlPanelHint"),
+                                     juce::dontSendNotification);
+        }
+        else
+        {
+            controlPanelHint.setText(tr("preferences.audio.controlPanelUnavailable"),
+                                     juce::dontSendNotification);
+        }
+    }
+
     void PreferencesComponent::layoutAudioTab()
     {
         if (audioTab == nullptr)
@@ -530,6 +587,12 @@ namespace host::gui
         layoutRow(outputDeviceLabel, outputDeviceBox);
         layoutRow(sampleRateLabel, engineSampleRateBox);
         layoutRow(blockSizeLabel, engineBlockBox);
+
+        // Control panel row: ASIO / WASAPI-exclusive vendor panel.
+        auto controlRow = area.removeFromTop(rowHeight);
+        controlPanelButton.setBounds(controlRow.removeFromLeft(labelWidth).reduced(0, controlInset));
+        controlPanelHint.setBounds(controlRow.reduced(0, controlInset));
+        area.removeFromTop(8);
     }
 
     void PreferencesComponent::layoutPluginTab()
@@ -590,6 +653,9 @@ namespace host::gui
         outputDeviceLabel.setText(tr("preferences.audio.output"), juce::dontSendNotification);
         sampleRateLabel.setText(tr("preferences.audio.sampleRate"), juce::dontSendNotification);
         blockSizeLabel.setText(tr("preferences.audio.blockSize"), juce::dontSendNotification);
+
+        controlPanelButton.setButtonText(tr("preferences.audio.controlPanel"));
+        controlPanelHint.setText(tr("preferences.audio.controlPanelHint"), juce::dontSendNotification);
 
         defaultPresetLabel.setText(tr("preferences.startup.defaultPreset"), juce::dontSendNotification);
         languageLabel.setText(tr("preferences.startup.language"), juce::dontSendNotification);

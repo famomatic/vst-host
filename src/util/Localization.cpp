@@ -63,6 +63,9 @@ namespace
         strings.set("preferences.audio.output", "Output Device");
         strings.set("preferences.audio.sampleRate", "Sample Rate");
         strings.set("preferences.audio.blockSize", "Block Size");
+        strings.set("preferences.audio.controlPanel", "Control Panel");
+        strings.set("preferences.audio.controlPanelHint", "Open the device vendor panel (ASIO/WASAPI hardware buffer, latch, exclusive mode).");
+        strings.set("preferences.audio.controlPanelUnavailable", "No vendor control panel for the current device.");
         strings.set("preferences.plugins.add", "Add");
         strings.set("preferences.plugins.remove", "Remove");
         strings.set("preferences.plugins.rescan", "Rescan");
@@ -185,6 +188,9 @@ namespace
         strings.set("preferences.audio.output", juce::String::fromUTF8("출력 장치"));
         strings.set("preferences.audio.sampleRate", juce::String::fromUTF8("샘플 레이트"));
         strings.set("preferences.audio.blockSize", juce::String::fromUTF8("블록 크기"));
+        strings.set("preferences.audio.controlPanel", juce::String::fromUTF8("컨트롤 패널"));
+        strings.set("preferences.audio.controlPanelHint", juce::String::fromUTF8("장치 제조사 패널 열기 (ASIO/WASAPI 하드웨어 버퍼, 래치, 독점 모드)."));
+        strings.set("preferences.audio.controlPanelUnavailable", juce::String::fromUTF8("현재 장치에 컨트롤 패널이 없습니다."));
         strings.set("preferences.plugins.add", juce::String::fromUTF8("추가"));
         strings.set("preferences.plugins.remove", juce::String::fromUTF8("삭제"));
         strings.set("preferences.plugins.rescan", juce::String::fromUTF8("다시 검색"));

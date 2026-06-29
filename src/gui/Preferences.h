@@ -34,6 +34,7 @@ namespace host::gui
         void refreshDriverList();
         void refreshDeviceLists();
         void refreshEngineOptions();
+        void refreshControlPanelState();
         void layoutAudioTab();
         void layoutPluginTab();
         void layoutStartupTab();
@@ -65,6 +66,8 @@ namespace host::gui
         juce::Label outputDeviceLabel;
         juce::Label sampleRateLabel;
         juce::Label blockSizeLabel;
+        juce::TextButton controlPanelButton { "Control Panel" };
+        juce::Label controlPanelHint;
         juce::ListBox pluginPathList { "PluginPaths", this };
         juce::TextButton addPathButton { "Add" };
         juce::TextButton removePathButton { "Remove" };
