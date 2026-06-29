@@ -16,6 +16,10 @@ namespace host::audio
     {
         double sampleRate { 48000.0 };
         int blockSize { 256 };
+        // Mirrors host::persist::EngineSettings::resamplerQuality.
+        // 0=Linear 1=CatmullRom 2=Lagrange 3=WindowedSinc
+        int resamplerQuality { 2 };
+        bool pdcEnabled { true };
     };
 
     struct DeviceInfo

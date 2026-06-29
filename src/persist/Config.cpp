@@ -22,6 +22,12 @@ namespace host::persist
         {
             engineSettings.sampleRate = object->getProperty("sampleRate");
             engineSettings.blockSize = static_cast<int>(object->getProperty("blockSize"));
+            engineSettings.resamplerQuality = static_cast<int>(object->getProperty("resamplerQuality"));
+            // Legacy files omit PDC/resampler fields; fall back to defaults so
+            // old configs still load cleanly.
+            if (engineSettings.resamplerQuality <= 0)
+                engineSettings.resamplerQuality = 2;
+            engineSettings.pdcEnabled = static_cast<bool>(object->getProperty("pdcEnabled"));
 
             pluginDirectories.clear();
             if (auto* arr = object->getProperty("pluginDirectories").getArray())
@@ -47,6 +53,8 @@ namespace host::persist
         juce::DynamicObject::Ptr obj(new juce::DynamicObject());
         obj->setProperty("sampleRate", engineSettings.sampleRate);
         obj->setProperty("blockSize", engineSettings.blockSize);
+        obj->setProperty("resamplerQuality", engineSettings.resamplerQuality);
+        obj->setProperty("pdcEnabled", engineSettings.pdcEnabled);
 
         juce::Array<juce::var> directories;
         for (auto& dir : pluginDirectories)

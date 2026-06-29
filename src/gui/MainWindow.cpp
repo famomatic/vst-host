@@ -559,7 +559,11 @@ void MainWindow::loadConfiguration()
         needsSave = true;
     }
 
-    host::audio::EngineConfig engineCfg { settings.sampleRate, settings.blockSize };
+    host::audio::EngineConfig engineCfg;
+    engineCfg.sampleRate = settings.sampleRate;
+    engineCfg.blockSize = settings.blockSize;
+    engineCfg.resamplerQuality = settings.resamplerQuality;
+    engineCfg.pdcEnabled = settings.pdcEnabled;
     deviceEngine.setEngineConfig(engineCfg);
 
     if (pluginScanner)

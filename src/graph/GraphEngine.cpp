@@ -238,6 +238,15 @@ void GraphEngine::setEngineFormat(double sampleRate, int blockSize)
     invalidateRuntimeUnlocked();
 }
 
+void GraphEngine::setPdcEnabled(bool enabled)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pdcEnabled_ == enabled)
+        return;
+    pdcEnabled_ = enabled;
+    invalidateRuntimeUnlocked();
+}
+
 void GraphEngine::prepare()
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -321,6 +330,47 @@ void GraphEngine::prepare()
         {
             runtime->hasOutputNode = true;
             runtime->outputNodeIndex = runtime->nodes.size() - 1;
+        }
+
+        // Plugin Delay Compensation: walk the topologically-sorted schedule
+        // and propagate the maximum upstream latency (node latencySamples()
+        // plus the longest feeding chain) to each node. The path with the
+        // largest total latency gets zero compensation; every other path is
+        // delayed by the difference so parallel chains stay sample-aligned.
+        runtime->pdcEnabled = pdcEnabled_;
+        if (pdcEnabled_)
+        {
+            std::vector<int> pathLatency(runtime->nodes.size(), 0);
+            for (size_t i = 0; i < runtime->nodes.size(); ++i)
+            {
+                auto& rn = runtime->nodes[i];
+                int maxUpstream = 0;
+                for (const auto srcIdx : rn.inputIndices)
+                {
+                    if (srcIdx < pathLatency.size())
+                        maxUpstream = std::max(maxUpstream, pathLatency[srcIdx]);
+                }
+                const int selfLatency = rn.node ? rn.node->latencySamples() : 0;
+                const int total = maxUpstream + std::max(0, selfLatency);
+                pathLatency[i] = total;
+            }
+
+            const int maxLatency = pathLatency.empty()
+                ? 0
+                : *std::max_element(pathLatency.begin(), pathLatency.end());
+            for (size_t i = 0; i < runtime->nodes.size(); ++i)
+            {
+                auto& rn = runtime->nodes[i];
+                rn.compensationSamples = std::max(0, maxLatency - pathLatency[i]);
+                if (rn.compensationSamples > 0)
+                {
+                    rn.pdcDelayBuffer.setSize(maxProcessChannels,
+                                              rn.compensationSamples + std::max(1, blockSize_),
+                                              false, false, true);
+                    rn.pdcDelayBuffer.clear();
+                    rn.pdcWritePos = 0;
+                }
+            }
         }
 
         runtimeState_.store(std::move(runtime), std::memory_order_release);
@@ -457,6 +507,32 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer, const std::uint64_t* 
             inPointers[static_cast<size_t>(ch)] = runtimeNode.inputBuffer.getWritePointer(ch);
         for (int ch = 0; ch < nodeOutputs; ++ch)
             outPointers[static_cast<size_t>(ch)] = runtimeNode.buffer.getWritePointer(ch);
+
+        // PDC: if this node sits on a shorter path than the longest chain,
+        // delay its input so it aligns sample-for-sample with the longest
+        // path. The delay line persists across blocks via pdcWritePos.
+        if (runtime->pdcEnabled && runtimeNode.compensationSamples > 0)
+        {
+            const int delay = runtimeNode.compensationSamples;
+            const int chCount = std::min(nodeInputs, runtimeNode.pdcDelayBuffer.getNumChannels());
+           for (int ch = 0; ch < chCount; ++ch)
+           {
+               auto* inputPtr = runtimeNode.inputBuffer.getWritePointer(ch);
+               auto* ring = runtimeNode.pdcDelayBuffer.getWritePointer(ch);
+               int writePos = runtimeNode.pdcWritePos;
+
+               // Push the current block into the ring, pulling out the
+               // samples that fall delay-samples behind.
+                for (int s = 0; s < numSamples; ++s)
+                {
+                    const float delayed = ring[writePos];
+                    ring[writePos] = inputPtr[s];
+                    inputPtr[s] = delayed;
+                    if (++writePos >= delay)
+                        writePos = 0;
+                }
+            }
+        }
 
         ProcessContext context {
             runtimeNode.buffer,

@@ -43,6 +43,10 @@ public:
 
     void setEngineFormat(double sampleRate, int blockSize);
     void prepare();
+    /// Enable/disable Plugin Delay Compensation. When enabled (default) the
+    /// runtime inserts delay lines so every path stays aligned with the
+    /// longest-latency chain. Disabled = low-latency passthrough, paths drift.
+    void setPdcEnabled(bool enabled);
     // hostTimeNs optional: when provided by the device callback (ASIO), it is
     // forwarded into each node's ProcessContext so time-aware plugins stay in
     // sync with the audio hardware clock.
@@ -62,6 +66,12 @@ private:
         std::vector<size_t> inputIndices;
         juce::AudioBuffer<float> buffer;
         juce::AudioBuffer<float> inputBuffer;
+        // PDC delay line: compensationSamples < 0 means "this node sits on the
+        // longest path" and introduces no delay; > 0 means earlier paths are
+        // delayed by that many samples to realign with the longest chain.
+        juce::AudioBuffer<float> pdcDelayBuffer;
+        int pdcWritePos { 0 };
+        int compensationSamples { 0 };
         bool receivesHostInput = false;
         int numInputChannels = 0;
         int numOutputChannels = 0;
@@ -75,6 +85,7 @@ private:
         bool hasOutputNode = false;
         double sampleRate = 0.0;
         int blockSize = 0;
+        bool pdcEnabled = true;
     };
 
     struct NodeEntry
@@ -104,6 +115,7 @@ private:
 
     double sampleRate_ = 0.0;
     int blockSize_ = 0;
+    bool pdcEnabled_ = true;
 
     std::atomic<bool> processingSuspended_ { false };
     std::atomic<int> inFlightProcessCallbacks_ { 0 };

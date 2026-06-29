@@ -44,14 +44,11 @@ namespace host::audio
     {
         graphEngine.store(std::move(newGraph));
 
-        EngineConfig cfg;
-        {
-            const std::lock_guard<std::mutex> lock(configMutex_);
-            cfg = engineConfig;
-        }
+        EngineConfig cfg = getEngineConfig();
 
         if (auto graph = graphEngine.load())
         {
+            graph->setPdcEnabled(cfg.pdcEnabled);
             graph->setEngineFormat(cfg.sampleRate, cfg.blockSize);
             graph->prepare();
         }
@@ -79,6 +76,7 @@ namespace host::audio
 
         if (auto graph = graphEngine.load())
         {
+            graph->setPdcEnabled(appliedConfig.pdcEnabled);
             graph->setEngineFormat(appliedConfig.sampleRate, appliedConfig.blockSize);
             graph->prepare();
         }
@@ -225,12 +223,14 @@ namespace host::audio
 
         const int inputChunk = std::max(deviceBlockSize, engineBlockSize) * 2;
         const double deviceToEngine = safeRatio(info.sampleRate, cfg.sampleRate);
-        state->inputResampler.prepare(numChannels, deviceToEngine, inputChunk, engineBlockSize, resamplerMargin);
+        state->inputResampler.prepare(numChannels, deviceToEngine, inputChunk, engineBlockSize,
+                                      resamplerQualityFromIndex(cfg.resamplerQuality), resamplerMargin);
         state->inputResampler.reset();
 
         const int outputChunk = std::max(deviceBlockSize, engineBlockSize) * 2;
         const double engineToDevice = safeRatio(cfg.sampleRate, info.sampleRate);
-        state->outputResampler.prepare(numChannels, engineToDevice, engineBlockSize, outputChunk, resamplerMargin);
+        state->outputResampler.prepare(numChannels, engineToDevice, engineBlockSize, outputChunk,
+                                       resamplerQualityFromIndex(cfg.resamplerQuality), resamplerMargin);
         state->outputResampler.reset();
 
         return state;

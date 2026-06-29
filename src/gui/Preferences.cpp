@@ -91,6 +91,8 @@ namespace host::gui
         configureLabel(outputDeviceLabel, tr("preferences.audio.output"));
         configureLabel(sampleRateLabel, tr("preferences.audio.sampleRate"));
         configureLabel(blockSizeLabel, tr("preferences.audio.blockSize"));
+        configureLabel(resamplerQualityLabel, tr("preferences.audio.resamplerQuality"));
+        configureLabel(pdcLabel, tr("preferences.audio.pdc"));
 
         audioTab->addAndMakeVisible(driverLabel);
         audioTab->addAndMakeVisible(driverBox);
@@ -102,6 +104,57 @@ namespace host::gui
         audioTab->addAndMakeVisible(engineSampleRateBox);
         audioTab->addAndMakeVisible(blockSizeLabel);
         audioTab->addAndMakeVisible(engineBlockBox);
+        audioTab->addAndMakeVisible(resamplerQualityLabel);
+        audioTab->addAndMakeVisible(resamplerQualityBox);
+        audioTab->addAndMakeVisible(pdcLabel);
+        audioTab->addAndMakeVisible(pdcToggle);
+
+        // Resampler quality: trades CPU for SRC accuracy between the device
+        // sample rate and the engine sample rate.
+        resamplerQualityBox.addItem(tr("preferences.audio.quality.linear"), 1);
+        resamplerQualityBox.addItem(tr("preferences.audio.quality.catmull"), 2);
+        resamplerQualityBox.addItem(tr("preferences.audio.quality.lagrange"), 3);
+        resamplerQualityBox.addItem(tr("preferences.audio.quality.sinc"), 4);
+        {
+            const auto settings = config.getEngineSettings();
+            // EngineSettings.resamplerQuality indexes: 0..3 map to item ids 1..4.
+            const int itemId = std::clamp(settings.resamplerQuality + 1, 1, 4);
+            resamplerQualityBox.setSelectedId(itemId, juce::dontSendNotification);
+        }
+        resamplerQualityBox.onChange = [this]
+        {
+            if (isUpdating)
+                return;
+            const auto selected = resamplerQualityBox.getSelectedId();
+            if (selected <= 0)
+                return;
+            const int qualityIndex = selected - 1;
+            auto cfg = deviceEngine.getEngineConfig();
+            cfg.resamplerQuality = qualityIndex;
+            deviceEngine.setEngineConfig(cfg);
+            auto settings = config.getEngineSettings();
+            settings.resamplerQuality = qualityIndex;
+            config.setEngineSettings(settings);
+            notifyConfigChanged();
+        };
+
+        // PDC: keep parallel chains sample-aligned with the longest path.
+        pdcToggle.setToggleState(config.getEngineSettings().pdcEnabled,
+                                 juce::dontSendNotification);
+        pdcToggle.setColour(juce::ToggleButton::textColourId, juce::Colours::whitesmoke);
+        pdcToggle.onClick = [this]
+        {
+            if (isUpdating)
+                return;
+            const bool enabled = pdcToggle.getToggleState();
+            auto cfg = deviceEngine.getEngineConfig();
+            cfg.pdcEnabled = enabled;
+            deviceEngine.setEngineConfig(cfg);
+            auto settings = config.getEngineSettings();
+            settings.pdcEnabled = enabled;
+            config.setEngineSettings(settings);
+            notifyConfigChanged();
+        };
 
         // ASIO (and some WASAPI) devices expose a vendor control panel for
         // hardware buffer / latch / exclusive-mode settings. Without it the
@@ -587,6 +640,8 @@ namespace host::gui
         layoutRow(outputDeviceLabel, outputDeviceBox);
         layoutRow(sampleRateLabel, engineSampleRateBox);
         layoutRow(blockSizeLabel, engineBlockBox);
+        layoutRow(resamplerQualityLabel, resamplerQualityBox);
+        layoutRow(pdcLabel, pdcToggle);
 
         // Control panel row: ASIO / WASAPI-exclusive vendor panel.
         auto controlRow = area.removeFromTop(rowHeight);
@@ -653,6 +708,9 @@ namespace host::gui
         outputDeviceLabel.setText(tr("preferences.audio.output"), juce::dontSendNotification);
         sampleRateLabel.setText(tr("preferences.audio.sampleRate"), juce::dontSendNotification);
         blockSizeLabel.setText(tr("preferences.audio.blockSize"), juce::dontSendNotification);
+        resamplerQualityLabel.setText(tr("preferences.audio.resamplerQuality"), juce::dontSendNotification);
+        pdcLabel.setText(tr("preferences.audio.pdc"), juce::dontSendNotification);
+        pdcToggle.setButtonText(tr("preferences.audio.pdc"));
 
         controlPanelButton.setButtonText(tr("preferences.audio.controlPanel"));
         controlPanelHint.setText(tr("preferences.audio.controlPanelHint"), juce::dontSendNotification);

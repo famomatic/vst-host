@@ -61,11 +61,15 @@ namespace host::gui
         juce::ComboBox outputDeviceBox;
         juce::ComboBox engineSampleRateBox;
         juce::ComboBox engineBlockBox;
+        juce::ComboBox resamplerQualityBox;
+        juce::ToggleButton pdcToggle { "PDC" };
         juce::Label driverLabel;
         juce::Label inputDeviceLabel;
         juce::Label outputDeviceLabel;
         juce::Label sampleRateLabel;
         juce::Label blockSizeLabel;
+        juce::Label resamplerQualityLabel;
+        juce::Label pdcLabel;
         juce::TextButton controlPanelButton { "Control Panel" };
         juce::Label controlPanelHint;
         juce::ListBox pluginPathList { "PluginPaths", this };

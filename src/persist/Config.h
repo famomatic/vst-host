@@ -9,6 +9,14 @@ namespace host::persist
     {
         double sampleRate { 48000.0 };
         int blockSize { 256 };
+        // Resampler quality used by the device engine when bridging between
+        // the hardware sample rate and the engine sample rate. Persisted so
+        // the user's CPU/quality trade-off survives restarts.
+        int resamplerQuality { 2 }; // 0=Linear 1=CatmullRom 2=Lagrange 3=WindowedSinc
+        // Plugin Delay Compensation master switch. When enabled the graph
+        // runtime inserts delay lines so parallel paths stay sample-aligned
+        // with the longest-latency chain.
+        bool pdcEnabled { true };
     };
 
     class Config

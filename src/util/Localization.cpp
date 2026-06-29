@@ -72,6 +72,12 @@ namespace
         strings.set("preferences.audio.controlPanel", "Control Panel");
         strings.set("preferences.audio.controlPanelHint", "Open the device vendor panel (ASIO/WASAPI hardware buffer, latch, exclusive mode).");
         strings.set("preferences.audio.controlPanelUnavailable", "No vendor control panel for the current device.");
+        strings.set("preferences.audio.resamplerQuality", "Resampler Quality");
+        strings.set("preferences.audio.pdc", "Plugin Delay Compensation");
+        strings.set("preferences.audio.quality.linear", "Linear (fastest)");
+        strings.set("preferences.audio.quality.catmull", "Catmull-Rom");
+        strings.set("preferences.audio.quality.lagrange", "Lagrange (default)");
+        strings.set("preferences.audio.quality.sinc", "Windowed Sinc (best)");
         strings.set("preferences.plugins.add", "Add");
         strings.set("preferences.plugins.remove", "Remove");
         strings.set("preferences.plugins.rescan", "Rescan");
@@ -203,6 +209,12 @@ namespace
         strings.set("preferences.audio.controlPanel", juce::String::fromUTF8("컨트롤 패널"));
         strings.set("preferences.audio.controlPanelHint", juce::String::fromUTF8("장치 제조사 패널 열기 (ASIO/WASAPI 하드웨어 버퍼, 래치, 독점 모드)."));
         strings.set("preferences.audio.controlPanelUnavailable", juce::String::fromUTF8("현재 장치에 컨트롤 패널이 없습니다."));
+        strings.set("preferences.audio.resamplerQuality", juce::String::fromUTF8("리샘플러 품질"));
+        strings.set("preferences.audio.pdc", juce::String::fromUTF8("플러그인 지연 보정 (PDC)"));
+        strings.set("preferences.audio.quality.linear", juce::String::fromUTF8("선형 (가장 빠름)"));
+        strings.set("preferences.audio.quality.catmull", juce::String::fromUTF8("Catmull-Rom"));
+        strings.set("preferences.audio.quality.lagrange", juce::String::fromUTF8("Lagrange (기본)"));
+        strings.set("preferences.audio.quality.sinc", juce::String::fromUTF8("윈도우드 싱크 (최고 품질)"));
         strings.set("preferences.plugins.add", juce::String::fromUTF8("추가"));
         strings.set("preferences.plugins.remove", juce::String::fromUTF8("삭제"));
         strings.set("preferences.plugins.rescan", juce::String::fromUTF8("다시 검색"));
