@@ -12,6 +12,13 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#if defined(_WIN32)
+ #ifndef NOMINMAX
+  #define NOMINMAX 1
+ #endif
+ #include <juce_gui_extra/embedding/juce_HWNDComponent.h>
+#endif
+
 #ifndef VST_HOST_OPCODE_GET_TIME
 #define VST_HOST_OPCODE_GET_TIME 0x07
 #endif
@@ -259,13 +266,16 @@ namespace
         double currentSampleRate() const noexcept { return sampleRate > 0.0 ? sampleRate : 44100.0; }
         int currentBlockSize() const noexcept { return blockSize > 0 ? blockSize : 512; }
 
+        // Editor lifecycle. The HWND is provided by the editor component's
+        // dedicated HWNDComponent child, not the dialog window.
         bool openEditor(void* parentHandle);
         void closeEditor();
         void idleEditor();
         bool getEditorBounds(juce::Rectangle<int>& bounds) const;
+        void setWindowSize(int width, int height);
         void registerEditor(Vst2EditorComponent* editor);
         void unregisterEditor(Vst2EditorComponent* editor);
-        bool handleEditorResizeRequest(int width, int height);
+        intptr_t dispatchEditor(int32_t opcode, int32_t index, std::int64_t value, void* ptr, float opt);
 
     private:
         bool supportsEditor() const;
@@ -286,103 +296,253 @@ namespace
         std::atomic<Vst2EditorComponent*> activeEditor { nullptr };
     };
 
+    // VST2 editor host. Mirrors juce::VSTPluginWindow: the plugin's editor is
+    // opened into a dedicated HWNDComponent child window (never the dialog's
+    // HWND), and peer/visibility transitions are tracked via
+    // ComponentMovementWatcher so open/close happens at the right moment.
+    // effEditGetRect is queried before AND after effEditOpen (Steinberg sample
+    // convention), and a timer re-checks the plugin's reported size for a few
+    // cycles because some plugins resize themselves asynchronously right after
+    // open - that async resize is exactly what caused "opened at min size".
     class Vst2EditorComponent final : public juce::Component,
-                                      private juce::Timer
+                                     private juce::ComponentMovementWatcher,
+                                     private juce::Timer
     {
     public:
         explicit Vst2EditorComponent(Vst2PluginInstance& ownerIn)
-            : owner(ownerIn)
+            : juce::ComponentMovementWatcher(this),
+              owner(ownerIn)
         {
-            setOpaque(false);
+            setOpaque(true);
+
+            // Seed size from the plugin's reported rect so the dialog wraps the
+            // editor tightly even before the native view is attached.
             juce::Rectangle<int> bounds;
             if (owner.getEditorBounds(bounds))
                 setSize(bounds.getWidth(), bounds.getHeight());
+            else
+                setSize(1, 1);
         }
 
         ~Vst2EditorComponent() override
         {
-            detachEditor();
+            stopTimer();
+            closePluginWindow();
         }
 
-        void parentHierarchyChanged() override
-        {
-            juce::Component::parentHierarchyChanged();
-            attachIfNeeded();
-        }
+        // Pin the desktop scale to 1.0 so the embedded editor is not scaled
+        // twice (host desktop scale + the plugin's own rendering scale).
+        float getDesktopScaleFactor() const override { return 1.0f; }
 
         void visibilityChanged() override
         {
             juce::Component::visibilityChanged();
             if (isShowing())
-                attachIfNeeded();
+                openPluginWindow();
             else
-                detachEditor();
+                closePluginWindow();
+            componentMovedOrResized(true, true);
         }
 
-        void focusGained(juce::Component::FocusChangeType cause) override
-        {
-            juce::Component::focusGained(cause);
-        }
-
-        void focusLost(juce::Component::FocusChangeType cause) override
-        {
-            juce::Component::focusLost(cause);
-        }
+        void focusGained(juce::Component::FocusChangeType) override {}
+        void focusLost(juce::Component::FocusChangeType) override {}
 
         void resized() override
         {
             juce::Component::resized();
+            embeddedComponent.setBounds(getLocalBounds());
         }
 
+        // Called from the audioMasterSizeWindow callback (message thread).
         void applyPluginRequestedSize(int width, int height)
         {
-            if (width > 0 && height > 0)
-                setSize(width, height);
-        }
-
-    private:
-        void attachIfNeeded()
-        {
-            if (attached || ! isShowing())
-                return;
-
-            if (auto* peer = getPeer())
+            if (width > 0 && height > 0 && ! recursiveResize)
             {
-                if (owner.openEditor(peer->getNativeHandle()))
-                {
-                    owner.registerEditor(this);
-                    attached = true;
-                    syncBoundsFromPlugin();
-                    startTimerHz(30);
-                }
+                ScopedFlag g(recursiveResize);
+                setSize(width, height);
             }
         }
 
-        void detachEditor()
+        // --- ComponentMovementWatcher hooks ---
+        void componentMovedOrResized(bool, bool wasResized) override
         {
-            if (! attached)
+            if (recursiveResize || ! wasResized)
+                return;
+            if (getTopLevelComponent() == nullptr || getTopLevelComponent()->getPeer() == nullptr)
                 return;
 
+            ScopedFlag g(recursiveResize);
+            embeddedComponent.setBounds(getLocalBounds());
+        }
+        using juce::ComponentMovementWatcher::componentMovedOrResized;
+
+        void componentVisibilityChanged() override
+        {
+            if (isShowing())
+                openPluginWindow();
+            else
+                closePluginWindow();
+            componentMovedOrResized(true, true);
+        }
+        using juce::ComponentMovementWatcher::componentVisibilityChanged;
+
+        void componentPeerChanged() override
+        {
+            closePluginWindow();
+            if (getPeer() != nullptr)
+            {
+                openPluginWindow();
+                componentMovedOrResized(true, true);
+            }
+        }
+
+    private:
+        struct ScopedFlag
+        {
+            bool& flag;
+            explicit ScopedFlag(bool& f) : flag(f) { flag = true; }
+            ~ScopedFlag() { flag = false; }
+        };
+
+        void openPluginWindow()
+        {
+            if (isOpen)
+                return;
+            if (getPeer() == nullptr)
+                return;
+
+            void* handle = embeddedComponent.getHWND();
+            if (handle == nullptr)
+                return;
+
+            // Add the embedded HWND host to the hierarchy now that the peer is
+            // ready. Adding it in the constructor (before the component has a
+            // peer) leaves the embedded native window unparented on some plugins.
+            addAndMakeVisible(embeddedComponent);
+            embeddedComponent.setBounds(getLocalBounds());
+
+            isOpen = true;
+            owner.registerEditor(this);
+
+            if (! owner.openEditor(handle))
+            {
+                isOpen = false;
+                owner.unregisterEditor(this);
+                setSize(300, 150);
+                return;
+            }
+
+            // effEditGetRect before AND after effEditOpen, as in the Steinberg
+            // sample host. After-open rect is the authoritative size because
+            // some plugins only populate it once the editor is actually open.
+            juce::Rectangle<int> rect;
+            owner.getEditorBounds(rect);
+
+            int w = rect.getWidth();
+            int h = rect.getHeight();
+            if (w <= 0 || h <= 0)
+            {
+                w = 300;
+                h = 150;
+            }
+
+            updateSizeFromEditor(w, h);
+
+            // Jitter the timer interval slightly; some plugins misbehave when
+            // multiple editors idle on an exact shared cadence.
+            startTimer(18 + juce::Random::getSystemRandom().nextInt(5));
+
+            // Reset the async size recheck counter so the timer reconfirms the
+            // plugin's size a few times after open.
+            sizeCheckCount = 0;
+        }
+
+        void closePluginWindow()
+        {
+            if (! isOpen)
+                return;
+            isOpen = false;
             stopTimer();
             owner.unregisterEditor(this);
             owner.closeEditor();
-            attached = false;
         }
 
-        void syncBoundsFromPlugin()
+        void updateSizeFromEditor(int w, int h)
         {
-            juce::Rectangle<int> bounds;
-            if (owner.getEditorBounds(bounds) && bounds.getWidth() > 0 && bounds.getHeight() > 0)
-                setSize(bounds.getWidth(), bounds.getHeight());
+            w = juce::jmax(w, 32);
+            h = juce::jmax(h, 32);
+            if (! recursiveResize)
+            {
+                ScopedFlag g(recursiveResize);
+                setSize(w, h);
+            }
         }
 
         void timerCallback() override
         {
+            if (! isShowing())
+                return;
+
+            // Periodically re-check the plugin's reported size. Some plugins
+            // finish their internal layout a few frames after effEditOpen and
+            // only then report the correct rect via effEditGetRect; without this
+            // recheck the editor stays clipped at the initial size.
+            if (--sizeCheckCount <= 0)
+            {
+                sizeCheckCount = 10;
+                checkPluginWindowSize();
+            }
+
             owner.idleEditor();
         }
 
+        void checkPluginWindowSize()
+        {
+            juce::Rectangle<int> rect;
+            if (! owner.getEditorBounds(rect))
+                return;
+
+            const int w = rect.getWidth();
+            const int h = rect.getHeight();
+            if (w <= 0 || h <= 0)
+                return;
+
+            if (! juce::isWithin(w, getWidth(), 2) || ! juce::isWithin(h, getHeight(), 2))
+            {
+                updateSizeFromEditor(w, h);
+                embeddedComponent.updateHWNDBounds();
+                sizeCheckCount = 0;
+            }
+        }
+
         Vst2PluginInstance& owner;
-        bool attached { false };
+        bool isOpen { false };
+        bool recursiveResize { false };
+        int sizeCheckCount { 0 };
+
+#if JUCE_WINDOWS
+        struct EmbeddedWindow final : public juce::HWNDComponent
+        {
+            EmbeddedWindow()
+            {
+                setOpaque(true);
+                inner.addToDesktop(0);
+                if (auto* peer = inner.getPeer())
+                    setHWND(peer->getNativeHandle());
+            }
+            void paint(juce::Graphics& g) override { g.fillAll(juce::Colours::black); }
+        private:
+            struct Inner final : public juce::Component
+            {
+                Inner() { setOpaque(true); }
+                void paint(juce::Graphics& g) override { g.fillAll(juce::Colours::black); }
+            };
+            Inner inner;
+        };
+        EmbeddedWindow embeddedComponent;
+#else
+        juce::Component embeddedComponent;
+#endif
     };
 
     bool Vst2PluginInstance::supportsEditor() const
@@ -448,6 +608,29 @@ namespace
         return true;
     }
 
+    void Vst2PluginInstance::setWindowSize(int width, int height)
+    {
+        // audioMasterSizeWindow: the plugin requests a new editor size.
+        // Forward to the active editor on the message thread.
+        auto* editor = activeEditor.load();
+        if (editor == nullptr)
+            return;
+
+        juce::Component::SafePointer<Vst2EditorComponent> safe(editor);
+        juce::MessageManager::callAsync([safe, width, height]
+        {
+            if (safe != nullptr)
+                safe->applyPluginRequestedSize(width, height);
+        });
+    }
+
+    intptr_t Vst2PluginInstance::dispatchEditor(int32_t opcode, int32_t index, std::int64_t value, void* ptr, float opt)
+    {
+        if (! effect)
+            return 0;
+        return effect->control(effect, opcode, index, value, ptr, opt);
+    }
+
     void Vst2PluginInstance::registerEditor(Vst2EditorComponent* editor)
     {
         activeEditor.store(editor);
@@ -458,24 +641,6 @@ namespace
         auto* current = activeEditor.load();
         if (current == editor)
             activeEditor.store(nullptr);
-    }
-
-    bool Vst2PluginInstance::handleEditorResizeRequest(int width, int height)
-    {
-        if (width <= 0 || height <= 0)
-            return false;
-
-        auto* editor = activeEditor.load();
-        if (editor == nullptr)
-            return false;
-
-        juce::Component::SafePointer<Vst2EditorComponent> safe(editor);
-        juce::MessageManager::callAsync([safe, width, height]
-        {
-            if (safe != nullptr)
-                safe->applyPluginRequestedSize(width, height);
-        });
-        return true;
     }
 
     void Vst2PluginInstance::shutdown()
@@ -544,8 +709,8 @@ namespace
         case VST_HOST_OPCODE_EDITOR_RESIZE:
             if (instance != nullptr)
             {
-                const bool accepted = instance->handleEditorResizeRequest(index, static_cast<int>(value));
-                return accepted ? VST_STATUS_TRUE : VST_STATUS_FALSE;
+                instance->setWindowSize(index, static_cast<int>(value));
+                return VST_STATUS_TRUE;
             }
             return VST_STATUS_FALSE;
         case VST_HOST_OPCODE_GET_SAMPLE_RATE:

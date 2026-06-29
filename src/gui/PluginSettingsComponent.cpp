@@ -33,6 +33,36 @@ namespace
     }
 }
 
+namespace
+{
+    // Plugin editor dialog that pins the desktop scale factor to 1.0 so the
+    // embedded plugin view is not blown up to 2x/3x on HiDPI displays. This
+    // mirrors LightHost's PluginWindow::getDesktopScaleFactor() override, and
+    // is the fix for editors opening full-screen or oversized on scaled
+    // monitors. setContentOwned(editor, true) lets the window auto-fit the
+    // editor's preferred size instead of the host guessing a window size.
+    class PluginEditorDialog final : public juce::DialogWindow
+    {
+    public:
+        explicit PluginEditorDialog(const juce::String& title)
+            : juce::DialogWindow(title, juce::Colours::darkgrey.darker(0.6f), true, true)
+        {
+            setUsingNativeTitleBar(true);
+            setResizable(false, false);
+            centreAroundComponent(nullptr, 400, 300);
+        }
+
+        // Force logical 1:1 scaling. The plugin view embeds its own native
+        // window and manages its own DPI via IPlugViewContentScaleSupport /
+        // effVendorSpecific, so the host must not apply an additional desktop
+        // scale on top - otherwise every dimension doubles on a 200% display.
+        float getDesktopScaleFactor() const override { return 1.0f; }
+
+        void closeButtonPressed() override { delete this; }
+        bool escapeKeyPressed() override { closeButtonPressed(); return true; }
+    };
+}
+
 PluginSettingsComponent::PluginSettingsComponent(std::shared_ptr<host::graph::GraphEngine> graphEngine,
                                                  host::graph::GraphEngine::NodeId nodeId,
                                                  std::function<void()> onChanged)
@@ -314,35 +344,21 @@ void PluginSettingsComponent::openEditor()
         return;
     }
 
-    // Respect the plug-in's own resize capability; forcing resizable=true for
-    // non-resizable editors left the host and plug-in out of sync, which
-    // caused some editors to render blank or refuse to open.
+    // LightHost pattern: create the dialog, seed a sane default size, then
+    // hand ownership of the editor to it with resizeToFit=true so the window
+    // wraps the editor's preferred size exactly. The dialog pins desktop scale
+    // to 1.0 (see PluginEditorDialog) so HiDPI does not inflate the result.
     const bool editorResizable = plugin->isEditorResizable();
 
-    juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned(editor.release());
-    options.dialogTitle = juce::String(vstNode->name());
-    options.componentToCentreAround = this;
-    options.useNativeTitleBar = true;
-    options.escapeKeyTriggersCloseButton = true;
-    options.resizable = editorResizable;
-    options.useBottomRightCornerResizer = editorResizable;
-    options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
-    if (auto* dialog = options.launchAsync())
-    {
-        dialog->setResizable(editorResizable, editorResizable);
-        // Wrap the dialog tightly around the editor's preferred size so a
-        // stale/default window size never clips the content.
-        if (auto* content = dialog->getContentComponent())
-        {
-            const auto contentBorder = dialog->getContentComponentBorder();
-            const auto windowBorder = dialog->getBorderThickness();
-            const int targetWidth = content->getWidth() + contentBorder.getLeftAndRight() + windowBorder.getLeftAndRight();
-            const int targetHeight = content->getHeight() + contentBorder.getTopAndBottom() + windowBorder.getTopAndBottom();
-            const auto bounds = dialog->getBounds();
-            dialog->setBounds(bounds.withSizeKeepingCentre(targetWidth, targetHeight));
-        }
-    }
+    auto* dialog = new PluginEditorDialog(juce::String(vstNode->name()));
+    dialog->setResizable(editorResizable, editorResizable);
+    dialog->setSize(400, 300);
+    // resizeToFit=true makes the DocumentWindow track the editor's size and
+    // apply the content border automatically - no manual border math, which
+    // was the source of both clipped (too small) and oversized windows.
+    dialog->setContentOwned(editor.release(), true);
+    dialog->centreAroundComponent(this, dialog->getWidth(), dialog->getHeight());
+    dialog->setVisible(true);
 }
 
 void PluginSettingsComponent::savePreset()

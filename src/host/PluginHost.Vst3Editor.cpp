@@ -4,24 +4,66 @@
 #include <pluginterfaces/gui/iplugview.h>
 #include <pluginterfaces/gui/iplugviewcontentscalesupport.h>
 
+#if defined(_WIN32)
+ #ifndef NOMINMAX
+  #define NOMINMAX 1
+ #endif
+ #include <juce_gui_extra/embedding/juce_HWNDComponent.h>
+#endif
+
 namespace host::plugin::vst3editor
 {
 namespace
 {
-class Vst3EditorComponent final : public juce::Component,
-                                  private juce::Timer,
-                                  public Steinberg::IPlugFrame
+// Reentrancy guard. The plugin<->host sizing loop is the classic source of
+// editor clipping bugs: host setSize() -> resize notification -> plugin
+// resizeView() -> host setSize() ... JUCE breaks the cycle with a recursive
+// resize flag; we mirror that exactly.
+struct ScopedFlag
 {
-    public:
+    bool& flag;
+    explicit ScopedFlag(bool& f) : flag(f) { flag = true; }
+    ~ScopedFlag() { flag = false; }
+};
+
+// VST3 editor host component. Mirrors juce::VST3PluginWindow, which is the
+// implementation Light Host (and every JUCE-based host) relies on. The key
+// detail is that the plugin's IPlugView attaches to a dedicated HWNDComponent
+// child window - never the dialog's HWND - and peer/visibility transitions
+// are tracked via ComponentMovementWatcher so attach/detach happens at the
+// right moment instead of being polled on a timer.
+class Vst3EditorComponent final : public juce::Component,
+                                 private juce::ComponentMovementWatcher,
+                                 public Steinberg::IPlugFrame
+{
+public:
     Vst3EditorComponent(const std::function<Steinberg::IPlugView*()>& createViewIn,
                         const std::function<void(Steinberg::IPlugView*)>& releaseViewIn)
-            : createView(createViewIn),
-              releaseView(releaseViewIn)
+        : juce::ComponentMovementWatcher(this),
+          createView(createViewIn),
+          releaseView(releaseViewIn)
+    {
+        setOpaque(true);
+        setSize(10, 10);
+
+        ensureView();
+
+        if (view)
         {
-            setOpaque(false);
-            ensureView();
-            adjustToInitialSize();
+            view->setFrame(this);
+
+            Steinberg::IPlugViewContentScaleSupport* support = nullptr;
+            if (view->queryInterface(Steinberg::IPlugViewContentScaleSupport::iid,
+                                     reinterpret_cast<void**>(&support)) == Steinberg::kResultOk
+                && support != nullptr)
+            {
+                scaleSupport = Steinberg::IPtr<Steinberg::IPlugViewContentScaleSupport>::adopt(support);
+            }
+
+            updateScaleFactor();
+            resizeToFit();
         }
+    }
 
     ~Vst3EditorComponent() override
     {
@@ -29,49 +71,63 @@ class Vst3EditorComponent final : public juce::Component,
         releaseCurrentView();
     }
 
-    [[nodiscard]] bool isViewAvailable() const noexcept { return view != nullptr; }
-
-    void parentHierarchyChanged() override
+    [[nodiscard]] bool isViewAvailable() const noexcept
     {
-        juce::Component::parentHierarchyChanged();
-        attachIfPossible();
-        updateScaleFactor();
+        return view != nullptr || (createView && releaseView);
     }
+
+    // Pin the desktop scale to 1.0 so the embedded IPlugView is not scaled
+    // twice (host desktop scale + the plugin's own content scale factor).
+    float getDesktopScaleFactor() const override { return 1.0f; }
 
     void visibilityChanged() override
     {
         juce::Component::visibilityChanged();
         if (isShowing())
-            attachIfPossible();
+            attachPluginWindow();
         else
             detachView();
+        resizeToFit();
+        componentMovedOrResized(true, true);
+        updateScaleFactor();
     }
 
-    void focusGained(juce::Component::FocusChangeType cause) override
+    void focusGained(juce::Component::FocusChangeType) override
     {
-        juce::Component::focusGained(cause);
-        if (view)
-            view->onFocus(true);
+        if (view) view->onFocus(true);
     }
-
-    void focusLost(juce::Component::FocusChangeType cause) override
+    void focusLost(juce::Component::FocusChangeType) override
     {
-        juce::Component::focusLost(cause);
-        if (view)
-            view->onFocus(false);
+        if (view) view->onFocus(false);
     }
 
     void resized() override
     {
         juce::Component::resized();
-        // Keep the plug-in view's logical size in sync with the component even
-        // before the native view is attached, otherwise an early setSize() from
-        // the host leaves the embedded view at its initial size and the content
-        // appears clipped inside a correctly-sized window.
-        if (view)
+        embeddedComponent.setBounds(getLocalBounds());
+
+        if (! view || recursiveResize)
+            return;
+
+        if (view->canResize() == Steinberg::kResultTrue)
         {
-            Steinberg::ViewRect rect { 0, 0, getWidth(), getHeight() };
-            view->onSize(&rect);
+            auto scaled = componentToVst3Rect(getLocalBounds());
+            auto constrained = scaled;
+            view->checkSizeConstraint(&constrained);
+            if (constrained.getWidth() != scaled.getWidth()
+                || constrained.getHeight() != scaled.getHeight())
+            {
+                ScopedFlag g(recursiveResize);
+                const auto logical = vst3ToComponentRect(constrained);
+                setSize(logical.getWidth(), logical.getHeight());
+            }
+            view->onSize(&constrained);
+        }
+        else
+        {
+            Steinberg::ViewRect rect;
+            if (view->getSize(&rect) == Steinberg::kResultOk)
+                embeddedComponent.setSize(juce::jmax(10, rect.right), juce::jmax(10, rect.bottom));
         }
     }
 
@@ -87,24 +143,12 @@ class Vst3EditorComponent final : public juce::Component,
             addRef();
             return Steinberg::kResultOk;
         }
-
         *obj = nullptr;
         return Steinberg::kNoInterface;
     }
 
     Steinberg::uint32 PLUGIN_API addRef() override { return 1; }
     Steinberg::uint32 PLUGIN_API release() override { return 1; }
-
-    void timerCallback() override
-    {
-        // Retries attaching the plug-in view once the native peer is ready.
-        if (attached || ! isShowing())
-        {
-            stopTimer();
-            return;
-        }
-        attachIfPossible();
-    }
 
     Steinberg::tresult PLUGIN_API resizeView(Steinberg::IPlugView* requestedView, Steinberg::ViewRect* newSize) override
     {
@@ -113,105 +157,118 @@ class Vst3EditorComponent final : public juce::Component,
 
         const int width = newSize->right - newSize->left;
         const int height = newSize->bottom - newSize->top;
+        if (width <= 0 || height <= 0)
+            return Steinberg::kInvalidArgument;
 
-        juce::Component::SafePointer<Vst3EditorComponent> safeComponent(this);
-        Steinberg::IPtr<Steinberg::IPlugView> retained(requestedView);
-        juce::MessageManager::callAsync([safeComponent, width, height, retained]()
+        ScopedFlag g(recursiveResize);
+
+        const auto logical = vst3ToComponentRect(*newSize);
+        setSize(logical.getWidth(), logical.getHeight());
+        embeddedComponent.setSize(logical.getWidth(), logical.getHeight());
+
+        // VST3 workflow requires the host to confirm the new size via onSize().
+        // Plugins that wait for this confirmation otherwise stall and render at
+        // their previous (often default/tiny) size - symptom 3.
+        Steinberg::ViewRect confirmed = componentToVst3Rect(getLocalBounds());
+        if (! isInOnSize)
         {
-            if (auto* comp = safeComponent.getComponent())
-            {
-                comp->setSize(width, height);
-                Steinberg::ViewRect rect { 0, 0, width, height };
-                retained->onSize(&rect);
-            }
-        });
-
+            ScopedFlag og(isInOnSize);
+            view->onSize(&confirmed);
+        }
         return Steinberg::kResultOk;
     }
 
 private:
+    // --- ComponentMovementWatcher hooks ---
+    void componentMovedOrResized(bool, bool wasResized) override
+    {
+        if (recursiveResize || ! wasResized)
+            return;
+        if (getTopLevelComponent() == nullptr || getTopLevelComponent()->getPeer() == nullptr)
+            return;
+
+        if (view && view->canResize() == Steinberg::kResultTrue)
+        {
+            ScopedFlag g(recursiveResize);
+            auto scaled = componentToVst3Rect(getLocalBounds());
+            view->onSize(&scaled);
+        }
+    }
+    using juce::ComponentMovementWatcher::componentMovedOrResized;
+
+    void componentVisibilityChanged() override
+    {
+        attachPluginWindow();
+        resizeToFit();
+        componentMovedOrResized(true, true);
+    }
+    using juce::ComponentMovementWatcher::componentVisibilityChanged;
+
+    void componentPeerChanged() override {}
+
+    Steinberg::ViewRect componentToVst3Rect(juce::Rectangle<int> r) const
+    {
+        return { 0, 0, r.getWidth(), r.getHeight() };
+    }
+    juce::Rectangle<int> vst3ToComponentRect(const Steinberg::ViewRect& vr) const
+    {
+        return { vr.right, vr.bottom };
+    }
+
     void ensureView()
     {
         if (view || ! createView)
             return;
-
         view = createView();
-        if (! view)
-            return;
-
-        Steinberg::IPlugViewContentScaleSupport* support = nullptr;
-        if (view->queryInterface(Steinberg::IPlugViewContentScaleSupport::iid, reinterpret_cast<void**>(&support)) == Steinberg::kResultOk && support != nullptr)
-            scaleSupport = Steinberg::IPtr<Steinberg::IPlugViewContentScaleSupport>::adopt(support);
-
-        adjustToInitialSize();
     }
 
-    void adjustToInitialSize()
+    void resizeToFit()
     {
         if (! view)
             return;
-
         Steinberg::ViewRect rect {};
-        const bool sizeRetrieved = (view->getSize(&rect) == Steinberg::kResultOk);
-        int width = rect.right - rect.left;
-        int height = rect.bottom - rect.top;
-
-        if (! sizeRetrieved || width <= 0 || height <= 0)
-        {
-            width = 800;
-            height = 600;
-        }
-
-        setSize(width, height);
-        Steinberg::ViewRect finalRect { 0, 0, width, height };
-        view->onSize(&finalRect);
+        if (view->getSize(&rect) != Steinberg::kResultOk)
+            return;
+        const auto logical = vst3ToComponentRect(rect);
+        setSize(juce::jmax(10, logical.getWidth()), juce::jmax(10, logical.getHeight()));
     }
 
-    void attachIfPossible()
+    void attachPluginWindow()
     {
-        if (attached || ! isShowing())
+        if (attached || ! view || ! isShowing() || getPeer() == nullptr)
             return;
 
-        ensureView();
-        if (! view)
+        void* nativeHandle = embeddedComponent.getHWND();
+        if (nativeHandle == nullptr)
             return;
 
-        // The peer (native window) may not exist yet when the component is
-        // first added to a dialog. Poll until it appears, then attach.
-        if (getPeer() == nullptr)
-        {
-            if (! isTimerRunning())
-                startTimerHz(30);
-            return;
-        }
-
-        if (auto* peer = getPeer())
-        {
-            void* nativeHandle = peer->getNativeHandle();
-            if (nativeHandle == nullptr)
-                return;
-
-            const char* platformType = nullptr;
+        const char* platformType = nullptr;
 #if JUCE_WINDOWS
-            platformType = Steinberg::kPlatformTypeHWND;
+        platformType = Steinberg::kPlatformTypeHWND;
 #elif JUCE_MAC
-            platformType = Steinberg::kPlatformTypeNSView;
+        platformType = Steinberg::kPlatformTypeNSView;
 #else
-            platformType = Steinberg::kPlatformTypeX11EmbedWindowID;
+        platformType = Steinberg::kPlatformTypeX11EmbedWindowID;
 #endif
 
-            if (view->isPlatformTypeSupported(platformType) != Steinberg::kResultTrue)
-                return;
+        if (view->isPlatformTypeSupported(platformType) != Steinberg::kResultTrue)
+            return;
 
-            if (view->attached(nativeHandle, platformType) == Steinberg::kResultOk)
-            {
-                view->setFrame(this);
-                attached = true;
-                updateScaleFactor();
-                Steinberg::ViewRect rect { 0, 0, getWidth(), getHeight() };
-                view->onSize(&rect);
-                stopTimer();
-            }
+        embeddedComponent.setBounds(getLocalBounds());
+
+        // Add the embedded HWND host to the hierarchy now that the peer is
+        // ready. Adding it in the constructor (before the component has a
+        // peer) leaves the embedded native window unparented on some plugins.
+        addAndMakeVisible(embeddedComponent);
+
+        if (view->attached(nativeHandle, platformType) == Steinberg::kResultOk)
+        {
+            attached = true;
+            updateScaleFactor();
+            // Sync native HWND bounds immediately; some plugins paint at their
+            // default size before the first propagated resize otherwise.
+            embeddedComponent.updateHWNDBounds();
+            resizeToFit();
         }
     }
 
@@ -219,8 +276,6 @@ private:
     {
         if (! view || ! attached)
             return;
-
-        stopTimer();
         view->setFrame(nullptr);
         view->removed();
         attached = false;
@@ -229,10 +284,9 @@ private:
     void releaseCurrentView()
     {
         scaleSupport = nullptr;
-        if (view)
+        if (view && releaseView)
         {
-            if (releaseView)
-                releaseView(view);
+            releaseView(view);
             view = nullptr;
         }
     }
@@ -241,12 +295,11 @@ private:
     {
         if (! scaleSupport || ! view)
             return;
-
+        float scale = 1.0f;
         if (auto* peer = getPeer())
-        {
-            const auto scale = peer->getPlatformScaleFactor();
-            scaleSupport->setContentScaleFactor(scale);
-        }
+            scale = peer->getPlatformScaleFactor();
+        scaleSupport->setContentScaleFactor(
+            static_cast<Steinberg::IPlugViewContentScaleSupport::ScaleFactor>(scale));
     }
 
     std::function<Steinberg::IPlugView*()> createView;
@@ -254,6 +307,35 @@ private:
     Steinberg::IPlugView* view { nullptr };
     Steinberg::IPtr<Steinberg::IPlugViewContentScaleSupport> scaleSupport;
     bool attached { false };
+    bool recursiveResize { false };
+    bool isInOnSize { false };
+
+#if JUCE_WINDOWS
+    // Dedicated HWND host. The plugin view attaches to THIS window, never to
+    // the dialog's HWND. That keeps the plugin clipped to the editor area
+    // instead of painting over (or being clipped by) the dialog chrome.
+    struct EmbeddedWindow final : public juce::HWNDComponent
+    {
+        EmbeddedWindow()
+        {
+            setOpaque(true);
+            inner.addToDesktop(0);
+            if (auto* peer = inner.getPeer())
+                setHWND(peer->getNativeHandle());
+        }
+        void paint(juce::Graphics& g) override { g.fillAll(juce::Colours::black); }
+    private:
+        struct Inner final : public juce::Component
+        {
+            Inner() { setOpaque(true); }
+            void paint(juce::Graphics& g) override { g.fillAll(juce::Colours::black); }
+        };
+        Inner inner;
+    };
+    EmbeddedWindow embeddedComponent;
+#else
+    juce::Component embeddedComponent;
+#endif
 };
 } // namespace
 
@@ -264,7 +346,6 @@ std::unique_ptr<juce::Component> createEditorComponent(
     auto editor = std::make_unique<Vst3EditorComponent>(createView, releaseView);
     if (! editor->isViewAvailable())
         return {};
-
     return editor;
 }
 } // namespace host::plugin::vst3editor
