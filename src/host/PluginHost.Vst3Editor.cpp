@@ -87,8 +87,12 @@ public:
             attachPluginWindow();
         else
             detachView();
+        // Re-fit to the view's own size on visibility transitions. Do NOT
+        // call componentMovedOrResized here: that pushes the host's current
+        // bounds back into onSize(), which during initial show is still the
+        // 10x10 constructor size (or a stale default) and shrinks the view a
+        // little more on every open/close cycle.
         resizeToFit();
-        componentMovedOrResized(true, true);
         updateScaleFactor();
     }
 
@@ -111,9 +115,27 @@ public:
 
         if (view->canResize() == Steinberg::kResultTrue)
         {
-            auto scaled = componentToVst3Rect(getLocalBounds());
+            const auto hostBounds = getLocalBounds();
+            if (hostBounds.getWidth() <= 0 || hostBounds.getHeight() <= 0)
+                return;
+
+            auto scaled = componentToVst3Rect(hostBounds);
             auto constrained = scaled;
             view->checkSizeConstraint(&constrained);
+
+            // The host may freely push a LARGER size to the view (user dragged
+            // the dialog bigger). But never push a size SMALLER than the view's
+            // own reported size: during the initial show and on peer/visibility
+            // transitions the host bounds can still be the 10x10 constructor
+            // size or a stale default, and feeding that to onSize() makes the
+            // view adopt it - then it reports that smaller rect next time,
+            // shrinking the editor a bit more on every open/close cycle.
+            const bool wouldShrinkView = lastViewSize.getWidth() > 0
+                && (constrained.getWidth() < lastViewSize.getWidth()
+                    || constrained.getHeight() < lastViewSize.getHeight());
+            if (wouldShrinkView)
+                return;
+
             if (constrained.getWidth() != scaled.getWidth()
                 || constrained.getHeight() != scaled.getHeight())
             {
@@ -121,7 +143,16 @@ public:
                 const auto logical = vst3ToComponentRect(constrained);
                 setSize(logical.getWidth(), logical.getHeight());
             }
-            view->onSize(&constrained);
+
+            // Only confirm a size to the view when the host is genuinely
+            // driving it larger (or matching) - otherwise leave the view's own
+            // size untouched so resizeToFit()/resizeView() stay in charge.
+            if (constrained.getWidth() >= lastViewSize.getWidth()
+                && constrained.getHeight() >= lastViewSize.getHeight())
+            {
+                view->onSize(&constrained);
+                lastViewSize = juce::Rectangle<int>(constrained.getWidth(), constrained.getHeight());
+            }
         }
         else
         {
@@ -165,6 +196,7 @@ public:
         const auto logical = vst3ToComponentRect(*newSize);
         setSize(logical.getWidth(), logical.getHeight());
         embeddedComponent.setSize(logical.getWidth(), logical.getHeight());
+        lastViewSize = juce::Rectangle<int>(logical.getWidth(), logical.getHeight());
 
         // VST3 workflow requires the host to confirm the new size via onSize().
         // Plugins that wait for this confirmation otherwise stall and render at
@@ -189,9 +221,22 @@ private:
 
         if (view && view->canResize() == Steinberg::kResultTrue)
         {
+            const auto hostBounds = getLocalBounds();
+            if (hostBounds.getWidth() <= 0 || hostBounds.getHeight() <= 0)
+                return;
+            // Same shrink-guard as resized(): only push the host's size to the
+            // view when it is at least as large as what the view last reported.
+            // Otherwise peer/move transitions (which fire with stale small
+            // bounds before the first layout) would shrink the view each time.
+            if (lastViewSize.getWidth() > 0
+                && (hostBounds.getWidth() < lastViewSize.getWidth()
+                    || hostBounds.getHeight() < lastViewSize.getHeight()))
+                return;
+
             ScopedFlag g(recursiveResize);
-            auto scaled = componentToVst3Rect(getLocalBounds());
+            auto scaled = componentToVst3Rect(hostBounds);
             view->onSize(&scaled);
+            lastViewSize = juce::Rectangle<int>(scaled.getWidth(), scaled.getHeight());
         }
     }
     using juce::ComponentMovementWatcher::componentMovedOrResized;
@@ -200,7 +245,9 @@ private:
     {
         attachPluginWindow();
         resizeToFit();
-        componentMovedOrResized(true, true);
+        // Do not call componentMovedOrResized here: it would push the host's
+        // (possibly still tiny/stale) bounds into onSize() and shrink the view.
+        // resizeToFit() already snaps the component to the view's reported size.
     }
     using juce::ComponentMovementWatcher::componentVisibilityChanged;
 
@@ -230,7 +277,10 @@ private:
         if (view->getSize(&rect) != Steinberg::kResultOk)
             return;
         const auto logical = vst3ToComponentRect(rect);
-        setSize(juce::jmax(10, logical.getWidth()), juce::jmax(10, logical.getHeight()));
+        const int w = juce::jmax(10, logical.getWidth());
+        const int h = juce::jmax(10, logical.getHeight());
+        lastViewSize = juce::Rectangle<int>(w, h);
+        setSize(w, h);
     }
 
     void attachPluginWindow()
@@ -309,6 +359,11 @@ private:
     bool attached { false };
     bool recursiveResize { false };
     bool isInOnSize { false };
+    // Last size the view reported/accepted (logical component pixels). Used to
+    // stop the host from pushing a smaller size back into onSize() during the
+    // initial show and peer/visibility transitions, which is what shrank the
+    // editor a little more on every open/close cycle.
+    juce::Rectangle<int> lastViewSize;
 
 #if JUCE_WINDOWS
     // Dedicated HWND host. The plugin view attaches to THIS window, never to

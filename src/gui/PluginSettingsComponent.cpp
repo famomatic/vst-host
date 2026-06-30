@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "graph/Nodes/VstFx.h"
+#include "gui/PluginEditorSizing.h"
 #include "persist/Preset.h"
 #include "util/Localization.h"
 
@@ -31,36 +32,6 @@ namespace
     {
         return juce::String(samples) + " " + tr("plugin.settings.samplesLabel");
     }
-}
-
-namespace
-{
-    // Plugin editor dialog that pins the desktop scale factor to 1.0 so the
-    // embedded plugin view is not blown up to 2x/3x on HiDPI displays. This
-    // mirrors LightHost's PluginWindow::getDesktopScaleFactor() override, and
-    // is the fix for editors opening full-screen or oversized on scaled
-    // monitors. setContentOwned(editor, true) lets the window auto-fit the
-    // editor's preferred size instead of the host guessing a window size.
-    class PluginEditorDialog final : public juce::DialogWindow
-    {
-    public:
-        explicit PluginEditorDialog(const juce::String& title)
-            : juce::DialogWindow(title, juce::Colours::darkgrey.darker(0.6f), true, true)
-        {
-            setUsingNativeTitleBar(true);
-            setResizable(false, false);
-            centreAroundComponent(nullptr, 400, 300);
-        }
-
-        // Force logical 1:1 scaling. The plugin view embeds its own native
-        // window and manages its own DPI via IPlugViewContentScaleSupport /
-        // effVendorSpecific, so the host must not apply an additional desktop
-        // scale on top - otherwise every dimension doubles on a 200% display.
-        float getDesktopScaleFactor() const override { return 1.0f; }
-
-        void closeButtonPressed() override { delete this; }
-        bool escapeKeyPressed() override { closeButtonPressed(); return true; }
-    };
 }
 
 PluginSettingsComponent::PluginSettingsComponent(std::shared_ptr<host::graph::GraphEngine> graphEngine,
@@ -344,21 +315,44 @@ void PluginSettingsComponent::openEditor()
         return;
     }
 
-    // LightHost pattern: create the dialog, seed a sane default size, then
-    // hand ownership of the editor to it with resizeToFit=true so the window
-    // wraps the editor's preferred size exactly. The dialog pins desktop scale
-    // to 1.0 (see PluginEditorDialog) so HiDPI does not inflate the result.
+    // Same sizing flow as MainWindow: size the editor component to its
+    // preferred/known size, let the dialog wrap it via launchAsync, then keep
+    // the window fitted to the editor through PluginEditorWindowController.
+    // This fixes clipped (too small) and oversized windows, and - because the
+    // editor component itself (not a seeded 400x300 dialog) is the size
+    // authority - stops the shrink-on-reopen cycle that the old
+    // setSize(400,300)+setContentOwned(true) path caused.
+    auto* editorComponent = editor.get();
     const bool editorResizable = plugin->isEditorResizable();
+    const auto sizing = host::gui::calculatePluginEditorSizing(*editorComponent, editorResizable);
+    if (editorComponent->getWidth() != sizing.targetContentWidth
+        || editorComponent->getHeight() != sizing.targetContentHeight)
+    {
+        editorComponent->setSize(sizing.targetContentWidth, sizing.targetContentHeight);
+    }
 
-    auto* dialog = new PluginEditorDialog(juce::String(vstNode->name()));
-    dialog->setResizable(editorResizable, editorResizable);
-    dialog->setSize(400, 300);
-    // resizeToFit=true makes the DocumentWindow track the editor's size and
-    // apply the content border automatically - no manual border math, which
-    // was the source of both clipped (too small) and oversized windows.
-    dialog->setContentOwned(editor.release(), true);
-    dialog->centreAroundComponent(this, dialog->getWidth(), dialog->getHeight());
-    dialog->setVisible(true);
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(editor.release());
+    options.dialogTitle = juce::String(vstNode->name());
+    options.componentToCentreAround = this;
+    options.useNativeTitleBar = true;
+    options.resizable = editorResizable;
+    options.escapeKeyTriggersCloseButton = true;
+    options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
+    options.useBottomRightCornerResizer = editorResizable;
+
+    if (auto* dialog = options.launchAsync())
+    {
+        dialog->setResizable(editorResizable, editorResizable);
+
+        if (auto* content = dialog->getContentComponent())
+        {
+            auto controller = std::make_unique<host::gui::PluginEditorWindowController>(*dialog, *content, editorResizable);
+            controller->applySizing();
+            dialog->getProperties().set(host::gui::kPluginEditorControllerProperty,
+                                        juce::var(new host::gui::PluginEditorControllerAttachment(std::move(controller))));
+        }
+    }
 }
 
 void PluginSettingsComponent::savePreset()
