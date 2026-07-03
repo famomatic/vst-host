@@ -11,28 +11,16 @@ if(MSVC)
     add_compile_options($<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/DNDEBUG>)
 endif()
 
-add_definitions(-DVST3_SDK)
-
 set(JUCE_SUBMODULE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/JUCE)
-set(VST3_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/VST3_SDK)
-set(VST2_SDK_DIR ${CMAKE_CURRENT_SOURCE_DIR}/externals/vst2sdk)
-
-if (EXISTS "${CMAKE_SOURCE_DIR}/externals/vst2sdk/include/vst.h")
-    message(STATUS "Found Xaymar VST2 SDK at ${CMAKE_SOURCE_DIR}/externals/vst2sdk")
-else()
-    message(FATAL_ERROR "Xaymar VST2 SDK not found. Expected ${CMAKE_SOURCE_DIR}/externals/vst2sdk/include/vst.h")
-endif()
 
 include_directories(
-    ${CMAKE_SOURCE_DIR}/externals/VST3_SDK
-    ${CMAKE_SOURCE_DIR}/externals/vst2sdk/include
+    ${CMAKE_SOURCE_DIR}/externals/JUCE/modules
+    ${CMAKE_SOURCE_DIR}/externals/vst2headers
 )
 
 if(NOT EXISTS ${JUCE_SUBMODULE_DIR}/CMakeLists.txt)
     message(FATAL_ERROR "JUCE submodule not found. Please initialise submodules under externals/JUCE.")
 endif()
-
-add_subdirectory(${VST3_SDK_DIR})
 
 add_subdirectory(externals/JUCE)
 add_subdirectory(src)

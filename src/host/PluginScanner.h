@@ -29,6 +29,10 @@ namespace host::plugin
         bool loadCache(const juce::File& cacheFile);
         bool saveCache(const juce::File& cacheFile) const;
 
+        // The loader owns the JUCE AudioPluginFormatManager; all plugin
+        // instantiation goes through it so JUCE owns the editor lifecycle.
+        PluginLoader& loader() { return loader_; }
+
     private:
         void runScan();
         void joinWorkerIfRunning();
@@ -42,5 +46,6 @@ namespace host::plugin
         std::atomic<bool> scanning { false };
         std::atomic<bool> cancelRequested { false };
         std::thread workerThread;
+        PluginLoader loader_;
     };
 }

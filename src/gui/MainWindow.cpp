@@ -647,39 +647,15 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
         {
             if (auto editor = plugin->createEditorComponent())
             {
-                auto* editorComponent = editor.get();
-                auto* audioProcessorEditor = dynamic_cast<juce::AudioProcessorEditor*>(editorComponent);
-                const bool editorResizable = audioProcessorEditor != nullptr
-                                              ? audioProcessorEditor->isResizable()
-                                              : plugin->isEditorResizable();
-
-                const auto sizing = host::gui::calculatePluginEditorSizing(*editorComponent, editorResizable);
-
-                if (editorComponent->getWidth() != sizing.targetContentWidth || editorComponent->getHeight() != sizing.targetContentHeight)
-                    editorComponent->setSize(sizing.targetContentWidth, sizing.targetContentHeight);
-
-                juce::DialogWindow::LaunchOptions options;
-                options.content.setOwned(editor.release());
-                options.dialogTitle = juce::String(vstNode->name());
-                options.componentToCentreAround = this;
-                options.useNativeTitleBar = true;
-                options.resizable = editorResizable;
-                options.escapeKeyTriggersCloseButton = true;
-                options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
-                options.useBottomRightCornerResizer = editorResizable;
-
-                if (auto* dialog = options.launchAsync())
-                {
-                    dialog->setResizable(editorResizable, editorResizable);
-
-                    if (auto* content = dialog->getContentComponent())
-                    {
-                        auto controller = std::make_unique<host::gui::PluginEditorWindowController>(*dialog, *content, editorResizable);
-                        controller->applySizing();
-                        dialog->getProperties().set(host::gui::kPluginEditorControllerProperty,
-                                                    juce::var(new host::gui::PluginEditorControllerAttachment(std::move(controller))));
-                    }
-                }
+                // Use a DocumentWindow with resizeToFitWhenContentChanges =
+                // true, like the reference host. The editor component is the
+                // size authority and the window follows it - no host<->plugin
+                // resize loop, so editors stop shrinking on focus loss and
+                // stop clipping async resizes on open.
+                const bool editorResizable = plugin->isEditorResizable();
+                new host::gui::PluginEditorWindow(juce::String(vstNode->name()),
+                                                 std::move(editor),
+                                                 editorResizable);
                 return;
             }
         }

@@ -315,44 +315,14 @@ void PluginSettingsComponent::openEditor()
         return;
     }
 
-    // Same sizing flow as MainWindow: size the editor component to its
-    // preferred/known size, let the dialog wrap it via launchAsync, then keep
-    // the window fitted to the editor through PluginEditorWindowController.
-    // This fixes clipped (too small) and oversized windows, and - because the
-    // editor component itself (not a seeded 400x300 dialog) is the size
-    // authority - stops the shrink-on-reopen cycle that the old
-    // setSize(400,300)+setContentOwned(true) path caused.
-    auto* editorComponent = editor.get();
+    // Use a DocumentWindow with resizeToFitWhenContentChanges = true, exactly
+    // like the reference host. The editor component is the size authority and
+    // the window follows it - no host<->plugin resize loop, so editors stop
+    // shrinking on focus loss and stop clipping async (re)sizes on open.
     const bool editorResizable = plugin->isEditorResizable();
-    const auto sizing = host::gui::calculatePluginEditorSizing(*editorComponent, editorResizable);
-    if (editorComponent->getWidth() != sizing.targetContentWidth
-        || editorComponent->getHeight() != sizing.targetContentHeight)
-    {
-        editorComponent->setSize(sizing.targetContentWidth, sizing.targetContentHeight);
-    }
-
-    juce::DialogWindow::LaunchOptions options;
-    options.content.setOwned(editor.release());
-    options.dialogTitle = juce::String(vstNode->name());
-    options.componentToCentreAround = this;
-    options.useNativeTitleBar = true;
-    options.resizable = editorResizable;
-    options.escapeKeyTriggersCloseButton = true;
-    options.dialogBackgroundColour = juce::Colours::darkgrey.darker(0.6f);
-    options.useBottomRightCornerResizer = editorResizable;
-
-    if (auto* dialog = options.launchAsync())
-    {
-        dialog->setResizable(editorResizable, editorResizable);
-
-        if (auto* content = dialog->getContentComponent())
-        {
-            auto controller = std::make_unique<host::gui::PluginEditorWindowController>(*dialog, *content, editorResizable);
-            controller->applySizing();
-            dialog->getProperties().set(host::gui::kPluginEditorControllerProperty,
-                                        juce::var(new host::gui::PluginEditorControllerAttachment(std::move(controller))));
-        }
-    }
+    new host::gui::PluginEditorWindow(juce::String(vstNode->name()),
+                                      std::move(editor),
+                                      editorResizable);
 }
 
 void PluginSettingsComponent::savePreset()

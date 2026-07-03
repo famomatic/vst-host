@@ -197,10 +197,8 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
 
             if (pluginFileExists)
             {
-                if (info.format == host::plugin::PluginFormat::VST2)
-                    instance = host::plugin::loadVst2(info);
-                else
-                    instance = host::plugin::loadVst3(info);
+                if (pluginScanner)
+                    instance = pluginScanner->loader().load(info);
 
                 if (instance)
                     instance->queryRuntimeInfo(info);
@@ -366,10 +364,7 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
 
     try
     {
-        if (pluginInfo.format == host::plugin::PluginFormat::VST2)
-            instance = host::plugin::loadVst2(pluginInfo);
-        else
-            instance = host::plugin::loadVst3(pluginInfo);
+        instance = pluginScanner->loader().load(pluginInfo);
 
         if (instance)
             instance->queryRuntimeInfo(pluginInfo);

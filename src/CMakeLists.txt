@@ -4,9 +4,7 @@ set(SOURCES
     ${SRC_DIR}/AppMain.cpp
     ${SRC_DIR}/audio/DeviceEngine.cpp
     ${SRC_DIR}/audio/Resampler.cpp
-    ${SRC_DIR}/host/PluginHost.Vst3.cpp
-    ${SRC_DIR}/host/PluginHost.Vst3Editor.cpp
-    ${SRC_DIR}/host/PluginHost.Vst2.cpp
+    ${SRC_DIR}/host/PluginHost.cpp
     ${SRC_DIR}/host/PluginScanner.cpp
     ${SRC_DIR}/graph/GraphEngine.cpp
     ${SRC_DIR}/graph/NodeFactory.cpp
@@ -32,7 +30,6 @@ set(SOURCES
     ${SRC_DIR}/persist/Project.cpp
     ${SRC_DIR}/persist/Preset.cpp
     ${SRC_DIR}/persist/ChainPreset.cpp
-    ${VST3_SDK_DIR}/public.sdk/source/common/memorystream.cpp
 )
 
 juce_add_gui_app(VSTHostApp
@@ -51,8 +48,6 @@ juce_generate_juce_header(VSTHostApp)
 target_include_directories(VSTHostApp
     PRIVATE
         ${SRC_DIR}
-        ${VST3_SDK_DIR}
-        ${VST2_SDK_DIR}/include
 )
 
 # 5) 필요한 JUCE 모듈 링크
@@ -66,10 +61,6 @@ target_link_libraries(VSTHostApp
         juce::juce_audio_utils
         juce::juce_dsp
 
-        sdk_hosting
-        sdk
-        base
-        pluginterfaces
 )
 
 # 6) 빌드 옵션
@@ -77,6 +68,8 @@ target_compile_definitions(VSTHostApp PRIVATE
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_PLUGINHOST_VST3=1
+    JUCE_PLUGINHOST_VST=1
 )
 
 if (MSVC)
