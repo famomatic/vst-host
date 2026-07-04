@@ -169,7 +169,23 @@ MainWindow::MainWindow()
     if (savedStateText.isNotEmpty())
         savedAudioState = juce::XmlDocument::parse(savedStateText);
 
-    const auto deviceInitError = deviceManager.initialise(2, 2, savedAudioState.get(), savedAudioState != nullptr);
+    // If the saved state has no input device recorded (e.g. the user previously
+    // closed the app with input deselected, or an early build wrote an empty
+    // input name), drop the state entirely and let JUCE pick a default pair.
+    // Otherwise initialise() restores the empty input and the input meter never
+    // moves even though a mic is available.
+    if (savedAudioState != nullptr)
+    {
+        const juce::String savedInput = savedAudioState->getStringAttribute("audioInputDeviceName");
+        if (savedInput.isEmpty())
+            savedAudioState.reset();
+    }
+
+    // selectDefaultDeviceOnFailure must be true when there is no saved state
+    // so JUCE picks a working default input/output pair. Passing false here
+    // (as the previous conditional did on first launch) left the device
+    // unopened and the input meter never moved even after selecting a mic.
+    const auto deviceInitError = deviceManager.initialise(2, 2, savedAudioState.get(), true);
     if (deviceInitError.isNotEmpty())
     {
         juce::Logger::writeToLog("Audio device initialization failed: " + deviceInitError);
