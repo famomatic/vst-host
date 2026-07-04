@@ -193,6 +193,11 @@ public:
         }
 
         draggingNode = true;
+        // Capture the starting world position and the mouse origin so the drag
+        // can be scaled by the graph zoom. ComponentDragger works in pixels,
+        // which would move nodes too fast when zoomed in.
+        dragStartWorld_ = owner.getNodePosition(nodeId);
+        dragStartMouse_ = event.position;
         dragger.startDraggingComponent(this, event);
     }
 
@@ -210,8 +215,16 @@ public:
 
         if (draggingNode)
         {
-            dragger.dragComponent(this, event, nullptr);
-            owner.updateNodePosition(nodeId, getBounds().toFloat().getPosition());
+            // Move by the mouse delta expressed in world units (pixels / zoom)
+            // so the node tracks the cursor 1:1 regardless of zoom level.
+            const float z = owner.getZoom();
+            const auto delta = (event.position - dragStartMouse_) / z;
+            juce::Point<float> newWorld { dragStartWorld_.x + delta.x,
+                                           dragStartWorld_.y + delta.y };
+            newWorld.x = std::max(0.0f, newWorld.x);
+            newWorld.y = std::max(0.0f, newWorld.y);
+            owner.setNodePosition(nodeId, newWorld);
+            owner.updateNodePositionFromWorld(nodeId, newWorld);
         }
     }
 
@@ -231,7 +244,7 @@ public:
         if (draggingNode)
         {
             draggingNode = false;
-            owner.updateNodePosition(nodeId, getBounds().toFloat().getPosition());
+            owner.updateNodePositionFromWorld(nodeId, owner.getNodePosition(nodeId));
         }
     }
 
@@ -272,6 +285,8 @@ private:
     juce::ComponentDragger dragger;
     bool draggingConnection { false };
     bool draggingNode { false };
+    juce::Point<float> dragStartWorld_ {};
+    juce::Point<float> dragStartMouse_ {};
 };
 
 GraphView::GraphView()
@@ -314,9 +329,9 @@ void GraphView::paint(juce::Graphics& g)
     g.fillAll(juce::Colours::darkgrey.darker(0.4f));
 
     const auto bounds = getLocalBounds().toFloat();
-    constexpr float gridSize = 64.0f;
-    const float startX = std::fmod(-viewOffset.x, gridSize);
-    const float startY = std::fmod(-viewOffset.y, gridSize);
+    const float gridSize = 64.0f * zoom_;
+    const float startX = std::fmod(-viewOffset.x * zoom_, gridSize);
+    const float startY = std::fmod(-viewOffset.y * zoom_, gridSize);
     g.setColour(juce::Colours::black.withAlpha(0.25f));
     for (float x = startX; x < bounds.getWidth(); x += gridSize)
         g.drawVerticalLine(static_cast<int>(std::round(x)), 0.0f, bounds.getHeight());
@@ -413,8 +428,14 @@ void GraphView::syncNodes(bool preservePositions)
             {
                 const float column = static_cast<float>(newPlacementIndex % 5);
                 const float row = static_cast<float>(newPlacementIndex / 5);
-                const float baseX = viewOffset.x + std::max(40.0f, getWidth() / 2.0f - kNodeWidth / 2.0f);
-                const float baseY = viewOffset.y + std::max(kDefaultTop, getHeight() / 2.0f - kNodeHeight / 2.0f);
+                // Place new nodes near the centre of the current view, in world
+                // units. The screen centre is converted to world coordinates by
+                // dividing by the zoom factor so the node appears under the
+                // cursor area regardless of zoom level.
+                const float centreWorldX = viewOffset.x + (static_cast<float>(getWidth()) / 2.0f) / zoom_;
+                const float centreWorldY = viewOffset.y + (static_cast<float>(getHeight()) / 2.0f) / zoom_;
+                const float baseX = std::max(0.0f, centreWorldX - kNodeWidth / 2.0f);
+                const float baseY = std::max(kDefaultTop, centreWorldY - kNodeHeight / 2.0f);
                 const float x = baseX + (column * kNodeHorizontalSpacing);
                 const float y = baseY + (row * (kNodeHeight + 40.0f));
                 nodePositions[key] = { x, y };
@@ -466,6 +487,7 @@ void GraphView::syncNodes(bool preservePositions)
 
 void GraphView::updateComponentPositions()
 {
+    const auto tf = juce::AffineTransform::scale(zoom_);
     for (const auto& component : nodeComponents)
     {
         if (component == nullptr)
@@ -475,9 +497,15 @@ void GraphView::updateComponentPositions()
         if (const auto posIt = nodePositions.find(key); posIt != nodePositions.end())
         {
             const auto& world = posIt->second;
+            // Place at the un-zoomed view position and apply a scale transform
+            // so the node (its paint, hit-test and child layout) scales as a
+            // unit. getX()/getY() then return the transform-agnostic position,
+            // which is what the connector helpers use, so we multiply by zoom_
+            // when reading them back in screen space.
             const auto viewPos = world - viewOffset;
             component->setTopLeftPosition(static_cast<int>(std::round(viewPos.x)),
                                           static_cast<int>(std::round(viewPos.y)));
+            component->setTransform(tf);
         }
     }
 }
@@ -501,6 +529,40 @@ void GraphView::updateNodePosition(NodeId id, juce::Point<float> topLeft)
                                       static_cast<int>(std::round(viewPos.y)));
     }
 
+    repaint();
+}
+
+juce::Point<float> GraphView::getNodePosition(NodeId id) const
+{
+    const auto key = id.toString().toStdString();
+    const auto it = nodePositions.find(key);
+    if (it != nodePositions.end())
+        return it->second;
+    return {};
+}
+
+void GraphView::setNodePosition(NodeId id, juce::Point<float> world)
+{
+    if (id.isNull())
+        return;
+    const auto key = id.toString().toStdString();
+    nodePositions[key] = world;
+}
+
+void GraphView::updateNodePositionFromWorld(NodeId id, juce::Point<float> world)
+{
+    if (id.isNull())
+        return;
+
+    if (auto* component = findNodeComponent(id))
+    {
+        // Components are placed at the un-zoomed view position and scaled via
+        // setTransform, so the component position is world - viewOffset (no
+        // zoom factor here).
+        const auto viewPos = world - viewOffset;
+        component->setTopLeftPosition(static_cast<int>(std::round(viewPos.x)),
+                                      static_cast<int>(std::round(viewPos.y)));
+    }
     repaint();
 }
 
@@ -826,8 +888,8 @@ void GraphView::drawConnections(juce::Graphics& g)
         if (from == nullptr || to == nullptr)
             continue;
 
-        const auto start = from->getOutputConnectorPosition();
-        const auto end = to->getInputConnectorPosition();
+        const auto start = connectorScreenPosition(*from, true);
+        const auto end = connectorScreenPosition(*to, false);
 
         juce::Path path;
         path.startNewSubPath(start);
@@ -843,7 +905,7 @@ void GraphView::drawConnections(juce::Graphics& g)
     {
         if (auto* sourceComponent = findNodeComponent(connectionSource))
         {
-            const auto start = sourceComponent->getOutputConnectorPosition();
+            const auto start = connectorScreenPosition(*sourceComponent, true);
             juce::Path preview;
             preview.startNewSubPath(start);
             const auto controlOffset = std::max(40.0f, std::abs(connectionDragPoint.x - start.x) / 2.0f);
@@ -1091,8 +1153,12 @@ void GraphView::centerOnSelectedNode()
         return;
 
     const auto nodePosition = it->second;
-    const float targetX = std::max(0.0f, nodePosition.x - (static_cast<float>(getWidth()) - kNodeWidth) / 2.0f);
-    const float targetY = std::max(0.0f, nodePosition.y - (static_cast<float>(getHeight()) - kNodeHeight) / 2.0f);
+    // Centre the node accounting for zoom: the visible world size is the pixel
+    // size divided by the zoom factor.
+    const float viewWorldW = static_cast<float>(getWidth()) / zoom_;
+    const float viewWorldH = static_cast<float>(getHeight()) / zoom_;
+    const float targetX = nodePosition.x - (viewWorldW - kNodeWidth) / 2.0f;
+    const float targetY = nodePosition.y - (viewWorldH - kNodeHeight) / 2.0f;
     setViewOffset({ targetX, targetY });
 }
 
@@ -1101,10 +1167,11 @@ void GraphView::setViewOffset(juce::Point<float> newOffset)
     // Allow the view to roam freely, including negative offsets, so the user
     // can scroll the canvas in any direction even when the content is smaller
     // than the viewport. We still clamp to a generous margin so nodes never
-    // disappear completely off-screen with no way back.
+    // disappear completely off-screen with no way back. The visible size is
+    // expressed in world units by dividing the pixel size by the zoom factor.
     const auto content = computeContentBounds();
-    const float width = static_cast<float>(std::max(1, getWidth()));
-    const float height = static_cast<float>(std::max(1, getHeight()));
+    const float width = static_cast<float>(std::max(1, getWidth())) / zoom_;
+    const float height = static_cast<float>(std::max(1, getHeight())) / zoom_;
 
     constexpr float kScrollMargin = 2000.0f;
     const float minX = content.getX() - kScrollMargin;
@@ -1123,8 +1190,54 @@ void GraphView::panBy(juce::Point<float> delta)
 {
     setViewOffset(viewOffset + delta);
 }
+void GraphView::setZoom(float newZoom)
+{
+    // Clamp to a useful range: 25%..400%. Keeps the canvas readable and
+    // prevents transforms from collapsing nodes to nothing or overflowing.
+    const float clamped = juce::jlimit(0.25f, 4.0f, newZoom);
+    if (std::abs(clamped - zoom_) < 0.001f)
+        return;
+
+    zoom_ = clamped;
+    updateComponentPositions();
+    repaint();
+}
+
+void GraphView::zoomAt(juce::Point<float> screenAnchor, float newZoom)
+{
+    const float clamped = juce::jlimit(0.25f, 4.0f, newZoom);
+    if (std::abs(clamped - zoom_) < 0.001f)
+        return;
+
+    // Keep the world point under the cursor stationary: solve for the new
+    // viewOffset such that screenToWorld(screenAnchor) is unchanged.
+    const auto worldAnchor = screenToWorld(screenAnchor);
+    zoom_ = clamped;
+    viewOffset = worldAnchor - screenAnchor / zoom_;
+    updateComponentPositions();
+    repaint();
+}
 void GraphView::mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
 {
+    // Ctrl + scroll zooms toward the cursor. Without Ctrl, the wheel pans the
+    // canvas (vertical by default, horizontal with Shift or a horizontal wheel).
+    if (event.mods.isCtrlDown())
+    {
+        const float factor = wheel.deltaY > 0.0f ? 1.1f : (wheel.deltaY < 0.0f ? 1.0f / 1.1f : 1.0f);
+        if (wheel.isSmooth)
+        {
+            // Trackpads deliver small fractional deltas; amplify so each
+            // gesture produces a visible step.
+            const float amplified = 1.0f + wheel.deltaY * 4.0f;
+            zoomAt(event.position, zoom_ * amplified);
+        }
+        else
+        {
+            zoomAt(event.position, zoom_ * factor);
+        }
+        return;
+    }
+
     // Two-finger / trackpad horizontal deltas arrive in wheel.deltaX. A mouse
     // with a horizontal wheel also surfaces here. Shift converts a vertical
     // wheel into horizontal scrolling, matching common DAW/host conventions.
@@ -1229,6 +1342,25 @@ juce::Rectangle<float> GraphView::computeContentBounds() const
     const float width = std::max(kNodeWidth, maxX - minX);
     const float height = std::max(kNodeHeight, maxY - minY);
     return { minX, minY, width, height };
+}
+juce::Point<float> GraphView::worldToScreen(juce::Point<float> world) const
+{
+    return (world - viewOffset) * zoom_;
+}
+
+juce::Point<float> GraphView::screenToWorld(juce::Point<float> screen) const
+{
+    return screen / zoom_ + viewOffset;
+}
+
+juce::Point<float> GraphView::connectorScreenPosition(const NodeComponent& node, bool output) const
+{
+    // The node component is placed at the un-zoomed view position and scaled via
+    // setTransform, so its connector helpers return parent-space (pre-zoom)
+    // coordinates. Multiply by zoom_ to land in screen space for drawing and
+    // hit testing.
+    const auto p = output ? node.getOutputConnectorPosition() : node.getInputConnectorPosition();
+    return p * zoom_;
 }
 
 } // namespace host::gui

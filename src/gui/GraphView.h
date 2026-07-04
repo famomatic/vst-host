@@ -41,6 +41,9 @@ namespace host::gui
         void syncNodes(bool preservePositions);
         void updateComponentPositions();
         void updateNodePosition(NodeId id, juce::Point<float> topLeft);
+        juce::Point<float> getNodePosition(NodeId id) const;
+        void setNodePosition(NodeId id, juce::Point<float> world);
+        void updateNodePositionFromWorld(NodeId id, juce::Point<float> world);
         void beginConnectionDrag(NodeId id, juce::Point<float> startPosition);
         void updateConnectionDrag(juce::Point<float> currentPosition);
         void completeConnectionDragAt(juce::Point<float> position);
@@ -58,9 +61,15 @@ namespace host::gui
         void centerOnSelectedNode();
         void setViewOffset(juce::Point<float> newOffset);
         void panBy(juce::Point<float> delta);
+        void setZoom(float newZoom);
+        void zoomAt(juce::Point<float> anchor, float newZoom);
+        [[nodiscard]] float getZoom() const noexcept { return zoom_; }
         [[nodiscard]] juce::Rectangle<float> computeContentBounds() const;
         [[nodiscard]] bool nodeSupportsSettings(NodeId id) const;
         [[nodiscard]] bool openNodeSettings(NodeId id);
+        [[nodiscard]] juce::Point<float> worldToScreen(juce::Point<float> world) const;
+        [[nodiscard]] juce::Point<float> screenToWorld(juce::Point<float> screen) const;
+        [[nodiscard]] juce::Point<float> connectorScreenPosition(const NodeComponent& node, bool output) const;
 
         [[nodiscard]] NodeComponent* findNodeComponent(NodeId id) const;
 
@@ -76,6 +85,8 @@ namespace host::gui
         bool isPanning = false;
         juce::Point<float> panAnchor {};
         juce::Point<float> panStartOffset {};
+
+        float zoom_ { 1.0f };
 
         bool isDraggingConnection = false;
         NodeId connectionSource {};
