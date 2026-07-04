@@ -43,6 +43,9 @@ namespace host::persist
 
             if (auto languageValue = object->getProperty("language"); languageValue.isString())
                 language = languageValue.toString();
+
+            if (auto stateValue = object->getProperty("audioDeviceState"); stateValue.isString())
+                audioDeviceState = stateValue.toString();
         }
 
         return true;
@@ -63,6 +66,7 @@ namespace host::persist
         obj->setProperty("pluginDirectories", juce::var(directories));
         obj->setProperty("defaultPreset", defaultPreset.getFullPathName());
         obj->setProperty("language", language);
+        obj->setProperty("audioDeviceState", audioDeviceState);
         auto json = juce::JSON::toString(juce::var(obj.get()), true);
         return file.replaceWithText(json);
     }

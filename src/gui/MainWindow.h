@@ -81,6 +81,13 @@ private:
     std::unique_ptr<TrayIcon> trayIcon;
     std::unique_ptr<host::gui::ConsoleWindow> consoleWindow;
     bool hiddenToTray { false };
+    // Track open per-node plugin windows so a second open request brings the
+    // existing window to the front instead of spawning a duplicate. Stored as
+    // SafePointers because the windows self-delete (closeButtonPressed ->
+    // delete this).
+    std::unordered_map<juce::Uuid, juce::Component::SafePointer<juce::Component>> openPluginWindows;
+    juce::Component::SafePointer<juce::DialogWindow> openPluginSettingsDialog;
+    host::graph::GraphEngine::NodeId openPluginSettingsNodeId;
     juce::File configDirectory;
     juce::File configFile;
     juce::File pluginCacheFile;

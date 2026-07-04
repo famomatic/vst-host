@@ -37,6 +37,13 @@ namespace host::persist
         void setLanguage(const juce::String& languageCode) { language = languageCode; }
         juce::String getLanguage() const noexcept { return language; }
 
+        // The AudioDeviceManager state as an XML string. Persisting this lets
+        // the chosen driver / input / output device, sample rate, buffer size
+        // and active channel mask survive a restart, which the engine settings
+        // alone do not capture. Empty when never saved.
+        void setAudioDeviceState(const juce::String& state) { audioDeviceState = state; }
+        juce::String getAudioDeviceState() const noexcept { return audioDeviceState; }
+
         bool load(const juce::File& file);
         bool save(const juce::File& file) const;
 
@@ -45,5 +52,6 @@ namespace host::persist
         std::vector<juce::File> pluginDirectories;
         juce::File defaultPreset;
         juce::String language { "en" };
+        juce::String audioDeviceState;
     };
 }

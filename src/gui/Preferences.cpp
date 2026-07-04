@@ -38,7 +38,7 @@ namespace host::gui
           config(configIn),
           onConfigChanged(std::move(onConfigChangedIn))
     {
-        setSize(720, 540);
+        setSize(680, 620);
         addAndMakeVisible(tabs);
         buildAudioTab();
         buildPluginTab();
@@ -77,8 +77,10 @@ namespace host::gui
     {
         if (auto* window = findParentComponentOfClass<juce::ResizableWindow>())
         {
-            window->setResizeLimits(720, 540, 4096, 4096);
-            window->setSize(std::max(window->getWidth(), 720), std::max(window->getHeight(), 540));
+            // Tall enough for the embedded device selector plus the
+            // host-engine rows (resampler / PDC / control panel) below it.
+            window->setResizeLimits(680, 620, 4096, 4096);
+            window->setSize(std::max(window->getWidth(), 680), std::max(window->getHeight(), 620));
         }
     }
 
@@ -103,8 +105,14 @@ namespace host::gui
         // previously lived here and could not toggle individual channels.
         deviceSelector = std::make_unique<juce::AudioDeviceSelectorComponent>(
             deviceManager, 0, 2, 0, 2, true, true, true, false);
-        deviceSelector->setSize(560, 320);
-        audioTab->addAndMakeVisible(*deviceSelector);
+        // Wrap in a Viewport so the (potentially tall) selector scrolls
+        // instead of overflowing the tab and clipping the host-engine rows
+        // below it. The selector keeps its own preferred size; the viewport
+        // exposes whatever does not fit.
+        deviceSelectorViewport = std::make_unique<juce::Viewport>();
+        deviceSelectorViewport->setViewedComponent(deviceSelector.get(), false);
+        deviceSelectorViewport->setScrollBarsShown(true, false);
+        audioTab->addAndMakeVisible(*deviceSelectorViewport);
 
         audioTab->addAndMakeVisible(resamplerQualityLabel);
         audioTab->addAndMakeVisible(resamplerQualityBox);
@@ -321,7 +329,14 @@ namespace host::gui
 
     void PreferencesComponent::refreshEngineControls()
     {
-        const juce::ScopedValueSetter<bool> guard(isUpdating, true);
+        // Note: we intentionally do NOT set isUpdating here. isUpdating guards
+        // the combo-box onChange callbacks that we no longer use; the device
+        // change comes from the embedded AudioDeviceSelectorComponent and we
+        // want to react to it (persisting the new state) rather than ignore it.
+        // persistingDeviceState_ prevents the save from re-triggering this
+        // callback recursively.
+        if (persistingDeviceState_)
+            return;
 
         auto* device = deviceManager.getCurrentAudioDevice();
         const bool supported = (device != nullptr && device->hasControlPanel());
@@ -372,16 +387,15 @@ namespace host::gui
         {
             deviceEngine.setEngineConfig(cfg);
             config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
-            notifyConfigChanged();
         }
-        else
-        {
-            // Still persist the device selection (input/output device names)
-            // even when the numeric format is unchanged, so the chosen device
-            // is remembered. AudioDeviceManager persists its own setup via the
-            // AudioDeviceSetup, but Config is the host's source of truth.
-            notifyConfigChanged();
-        }
+
+        // Always persist on any device change so the user's input device /
+        // channel selection is saved immediately. notifyConfigChanged calls
+        // onConfigChanged -> saveConfiguration(), which now also stores the
+        // full AudioDeviceManager XML state.
+        persistingDeviceState_ = true;
+        notifyConfigChanged();
+        persistingDeviceState_ = false;
     }
 
     void PreferencesComponent::layoutAudioTab()
@@ -394,14 +408,26 @@ namespace host::gui
         const auto rowHeight = 48;
         const auto controlInset = 6;
 
-        // The embedded AudioDeviceSelectorComponent owns the driver / device /
-        // sample-rate / buffer-size / channel toggles, so it takes the top of
-        // the tab. Host-engine-only options (resampler quality, PDC, vendor
-        // control panel) live below it.
-        const int selectorHeight = 320;
-        if (deviceSelector != nullptr)
-            deviceSelector->setBounds(area.removeFromTop(selectorHeight).reduced(controlInset));
-        area.removeFromTop(12);
+        // Reserve space for the host-engine rows (resampler, PDC, control
+        // panel) at the bottom first, then give the rest to the device
+        // selector viewport so it never pushes those rows off-screen.
+        const int reservedBottom = rowHeight * 3 + 8 * 3 + 12;
+        auto selectorArea = area.withTrimmedBottom(reservedBottom).reduced(controlInset);
+        if (deviceSelectorViewport != nullptr)
+        {
+            deviceSelectorViewport->setBounds(selectorArea);
+            // Let the selector use its preferred width and at least the
+            // viewport's height so short selectors do not leave a gap.
+            if (deviceSelector != nullptr)
+            {
+                const int prefW = deviceSelector->getWidth();
+                const int prefH = juce::jmax(deviceSelector->getHeight(),
+                                             selectorArea.getHeight());
+                deviceSelector->setSize(juce::jmax(prefW, selectorArea.getWidth()), prefH);
+            }
+        }
+        area.removeFromBottom(reservedBottom);
+        area.removeFromTop(8);
 
         auto layoutRow = [&](juce::Label& label, juce::Component& field)
         {
@@ -540,10 +566,9 @@ namespace host::gui
         {
             // A device change came from the embedded selector (or the vendor
             // control panel). Refresh the engine/control-panel state and
-            // persist the new settings. Guard against recursive notifications
-            // triggered by our own setEngineConfig.
-            if (! isUpdating)
-                refreshEngineControls();
+            // persist the new settings. refreshEngineControls guards itself
+            // against recursion via persistingDeviceState_.
+            refreshEngineControls();
         }
         else if (source == &host::i18n::manager())
             applyTranslations();
@@ -570,8 +595,15 @@ namespace host::gui
 
     void PreferencesComponent::notifyConfigChanged()
     {
+        // Preserve the full engine settings (resampler quality / PDC) rather
+        // than overwriting them with defaults via a partial EngineSettings
+        // aggregate. Copy the current config, update only the format fields,
+        // then persist.
+        auto settings = config.getEngineSettings();
         const auto cfg = deviceEngine.getEngineConfig();
-        config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
+        settings.sampleRate = cfg.sampleRate;
+        settings.blockSize = cfg.blockSize;
+        config.setEngineSettings(settings);
         if (onConfigChanged)
             onConfigChanged(config);
     }

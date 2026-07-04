@@ -61,6 +61,7 @@ namespace host::gui
         juce::TextButton controlPanelButton { "Control Panel" };
         juce::Label controlPanelHint;
         std::unique_ptr<juce::AudioDeviceSelectorComponent> deviceSelector;
+        std::unique_ptr<juce::Viewport> deviceSelectorViewport;
         juce::ListBox pluginPathList { "PluginPaths", this };
         juce::TextButton addPathButton { "Add" };
         juce::TextButton removePathButton { "Remove" };
@@ -74,5 +75,6 @@ namespace host::gui
         juce::StringArray languageCodes;
         std::vector<juce::File> pluginPaths;
         bool isUpdating { false };
+        bool persistingDeviceState_ { false };
     };
 }

@@ -152,10 +152,24 @@ MainWindow::MainWindow()
     setUsingNativeTitleBar(true);
     setResizable(true, true);
 
+    // Load the persisted configuration before opening the audio device so the
+    // saved driver / input / output device, sample rate, buffer size and
+    // channel mask can be restored by AudioDeviceManager::initialise. Without
+    // this the device reopens with defaults on every launch and the user's
+    // input device choice is lost.
+    loadConfiguration();
+
     deviceEngine.setGraph(graphEngine);
     deviceEngine.setEngineConfig({ 48000.0, 256 });
 
-    const auto deviceInitError = deviceManager.initialise(2, 2, nullptr, true);
+    // Restore the saved audio device state if we have one; otherwise let JUCE
+    // pick sensible defaults (last arg = true).
+    std::unique_ptr<juce::XmlElement> savedAudioState;
+    const auto savedStateText = config.getAudioDeviceState();
+    if (savedStateText.isNotEmpty())
+        savedAudioState = juce::XmlDocument::parse(savedStateText);
+
+    const auto deviceInitError = deviceManager.initialise(2, 2, savedAudioState.get(), savedAudioState != nullptr);
     if (deviceInitError.isNotEmpty())
     {
         juce::Logger::writeToLog("Audio device initialization failed: " + deviceInitError);
@@ -195,8 +209,6 @@ MainWindow::MainWindow()
     setContentOwned(content, true);
 
     setMenuBar(this);
-
-    loadConfiguration();
 
     if (! loadStartupGraph())
         initialiseGraph();
@@ -409,7 +421,19 @@ void MainWindow::saveConfiguration()
         configDirectory.createDirectory();
 
     auto engineCfg = deviceEngine.getEngineConfig();
-    config.setEngineSettings({ engineCfg.sampleRate, engineCfg.blockSize });
+    // Preserve resampler quality / PDC by merging into the existing settings
+    // rather than overwriting the whole aggregate (which would reset the
+    // fields not carried by EngineConfig).
+    auto engineSettings = config.getEngineSettings();
+    engineSettings.sampleRate = engineCfg.sampleRate;
+    engineSettings.blockSize = engineCfg.blockSize;
+    config.setEngineSettings(engineSettings);
+
+    // Persist the full audio device setup (driver, input/output device, sample
+    // rate, buffer size, active channel masks) so the user's choices survive a
+    // restart. This is what makes a saved input device actually come back.
+    if (auto state = deviceManager.createStateXml())
+        config.setAudioDeviceState(state->toString());
 
     if (pluginScanner)
     {
@@ -642,6 +666,20 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
     {
         if (plugin->hasEditor())
         {
+            // If an editor window for this node is already open, just bring it
+            // to the front instead of opening a second one (which previously
+            // leaked the first and could crash on close).
+            const auto existingIt = openPluginWindows.find(id);
+            if (existingIt != openPluginWindows.end())
+            {
+                if (auto* existing = existingIt->second.getComponent())
+                {
+                    existing->toFront(true);
+                    return;
+                }
+                openPluginWindows.erase(existingIt);
+            }
+
             if (auto editor = plugin->createEditorComponent())
             {
                 // Use a DocumentWindow with resizeToFitWhenContentChanges =
@@ -654,11 +692,12 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
                 // the plugin node is removed from the graph while the editor
                 // is still open. This prevents use-after-free crashes when the
                 // node is deleted out from under the open editor.
-                new host::gui::PluginEditorWindow(juce::String(vstNode->name()),
-                                                 std::move(editor),
-                                                 editorResizable,
-                                                 graphEngine,
-                                                 id);
+                auto* window = new host::gui::PluginEditorWindow(juce::String(vstNode->name()),
+                                                                  std::move(editor),
+                                                                  editorResizable,
+                                                                  graphEngine,
+                                                                  id);
+                openPluginWindows[id] = juce::Component::SafePointer<juce::Component>(window);
                 return;
             }
         }
@@ -674,6 +713,14 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
                                                                                   {
                                                                                       graphView.refreshGraph(true);
                                                                                   });
+
+    // If the plugin-settings dialog for this exact node is already open,
+    // surface it instead of opening a second copy.
+    if (openPluginSettingsNodeId == id && openPluginSettingsDialog != nullptr)
+    {
+        openPluginSettingsDialog->toFront(true);
+        return;
+    }
 
     auto* settingsComponentPtr = settingsComponent.get();
     // The component sizes itself in its constructor; respect that and only
@@ -695,6 +742,8 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
 
     if (auto* dialog = options.launchAsync())
     {
+        openPluginSettingsDialog = juce::Component::SafePointer<juce::DialogWindow>(dialog);
+        openPluginSettingsNodeId = id;
         // Force the dialog window to wrap the content component exactly,
         // otherwise launchAsync may open at a stale/default size and clip it.
         if (auto* content = dialog->getContentComponent())
