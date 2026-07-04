@@ -7,6 +7,7 @@
 #include <system_error>
 #include <unordered_map>
 #include <vector>
+#include <thread>
 
 #include "graph/Nodes/AudioIn.h"
 #include "graph/Nodes/AudioOut.h"
@@ -17,17 +18,27 @@
 
 bool MainWindow::loadStartupGraph()
 {
+    // Establish a basic input -> output graph immediately so audio flows the
+    // moment the device callback starts. Session/preset restore loads plugins
+    // synchronously and can take many seconds (plugin instantiation is slow);
+    // without this baseline graph the user hears silence for the entire load
+    // and the JUCE device "Test" button also appears dead because DeviceEngine
+    // keeps clearing the output while the graph is empty.
+    initialiseGraph();
+
+    // Decide which file (if any) to restore. The actual restore runs on a
+    // background thread so the message thread - and therefore the already-live
+    // audio graph - keeps running while plugins instantiate.
+    juce::File fileToLoad;
+    bool isPreset = false;
+
     const auto preset = config.getDefaultPreset();
     if (preset.getFullPathName().isNotEmpty())
     {
         if (preset.existsAsFile())
         {
-            if (loadProjectFromFile(preset))
-                return true;
-
-            juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
-                                                   host::i18n::tr("error.loadPreset.title"),
-                                                   host::i18n::tr("error.loadPreset.message").replace("%1", preset.getFullPathName()));
+            fileToLoad = preset;
+            isPreset = true;
         }
         else
         {
@@ -35,10 +46,37 @@ bool MainWindow::loadStartupGraph()
         }
     }
 
-    if (lastSessionFile.existsAsFile())
-        return loadProjectFromFile(lastSessionFile);
+    if (fileToLoad == juce::File() && lastSessionFile.existsAsFile())
+        fileToLoad = lastSessionFile;
 
-    return false;
+    if (fileToLoad == juce::File())
+        return true; // baseline graph is running; nothing else to do
+
+    const auto fileToLoadCopy = fileToLoad;
+    const auto isPresetCopy = isPreset;
+
+    // Restore on a background thread. Plugin instantiation is the slow part
+    // and is now done BEFORE the live graph is cleared (see
+    // rebuildGraphFromProject), so the baseline input -> output graph keeps
+    // passing audio until the very end of the load, when the prepared nodes
+    // are swapped in in one quick pass.
+    std::thread([this, fileToLoadCopy, isPresetCopy]()
+    {
+        const bool ok = loadProjectFromFile(fileToLoadCopy);
+
+        juce::MessageManager::callAsync([this, ok, isPresetCopy, fileToLoadCopy]()
+        {
+            if (! ok && isPresetCopy)
+            {
+                juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon,
+                                                       host::i18n::tr("error.loadPreset.title"),
+                                                       host::i18n::tr("error.loadPreset.message").replace("%1", fileToLoadCopy.getFullPathName()));
+            }
+            graphView.refreshGraph(false);
+        });
+    }).detach();
+
+    return true;
 }
 
 bool MainWindow::loadProjectFromFile(const juce::File& file)
@@ -91,8 +129,6 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
         return;
 
     const auto engineConfig = deviceEngine.getEngineConfig();
-    graphEngine->clear();
-    graphEngine->setEngineFormat(engineConfig.sampleRate, engineConfig.blockSize);
 
     std::unordered_map<juce::Uuid, host::graph::GraphEngine::NodeId> idMap;
     idMap.reserve(project.getNodes().size());
@@ -228,6 +264,20 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
         return {};
     };
 
+    // Instantiate every node BEFORE touching the live graph. Plugin
+    // instantiation is the slow part (can take many seconds); doing it first
+    // means the graph is only empty for the brief clear+rebuild window below
+    // instead of for the whole load. This keeps audio passing through whatever
+    // graph was already running (e.g. the startup baseline) for as long as
+    // possible.
+    struct PreparedNode
+    {
+        host::persist::Project::NodeDefinition definition;
+        std::unique_ptr<host::graph::Node> node;
+    };
+    std::vector<PreparedNode> prepared;
+    prepared.reserve(project.getNodes().size());
+
     for (const auto& nodeDef : project.getNodes())
     {
         auto node = createNodeForDefinition(nodeDef);
@@ -237,6 +287,20 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
                 juce::Logger::writeToLog("Unknown node type in project: " + nodeDef.type);
             continue;
         }
+
+        prepared.push_back({ nodeDef, std::move(node) });
+    }
+
+    // Now swap into the live graph in one quick pass: clear, add all prepared
+    // nodes, connect, set IO, prepare. The graph is empty only for this short
+    // window, not for the whole plugin-load phase.
+    graphEngine->clear();
+    graphEngine->setEngineFormat(engineConfig.sampleRate, engineConfig.blockSize);
+
+    for (auto& prep : prepared)
+    {
+        const auto& nodeDef = prep.definition;
+        auto node = std::move(prep.node);
 
         host::graph::GraphEngine::NodeId assignedId;
 
@@ -341,7 +405,17 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
         return;
     }
 
-    graphView.refreshGraph(false);
+    // refreshGraph touches JUCE Components and must run on the message
+    // thread. This rebuild may have been triggered from a background session
+    // load, so defer when we are not on the message thread.
+    if (juce::MessageManager::getInstance()->isThisTheMessageThread())
+    {
+        graphView.refreshGraph(false);
+    }
+    else
+    {
+        juce::MessageManager::callAsync([this]() { graphView.refreshGraph(false); });
+    }
 
     if (missingPlugins.size() > 0)
     {
