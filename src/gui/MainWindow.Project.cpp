@@ -403,7 +403,18 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
     const auto inputId = graphEngine->getInputNode();
     const auto outputId = graphEngine->getOutputNode();
 
-    std::vector<host::graph::GraphEngine::NodeId> previousSources;
+    // Decide where to splice the new node. Preference order:
+    //   1. Tail nodes that have no outgoing connection (the user left the
+    //      output unconnected) -> chain the new node after them, then connect
+    //      the new node to the output. This gives the requested
+    //      "input -> new -> output" structure when nothing was wired to the
+    //      output yet.
+    //   2. Otherwise splice the new node just before the output (the classic
+    //      insert-at-end behaviour).
+    std::vector<host::graph::GraphEngine::NodeId> sourcesToConnect;
+    std::vector<host::graph::GraphEngine::NodeId> nodesBeforeOutput;
+    bool spliceBeforeOutput = false;
+
     auto connections = graphEngine->getConnections();
 
     if (! outputId.isNull())
@@ -411,25 +422,61 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
         for (const auto& connection : connections)
         {
             if (connection.second == outputId)
-            {
-                previousSources.push_back(connection.first);
-                graphEngine->disconnect(connection.first, connection.second);
-            }
+                nodesBeforeOutput.push_back(connection.first);
         }
     }
 
-    if (previousSources.empty())
+    // Find tail nodes: registered nodes (excluding input/output/io) that have
+    // no outgoing edge at all. These are plugins the user added but never
+    // wired onward. Chaining the new node after them is the most useful
+    // behaviour because it actually routes their audio somewhere.
+    const auto allNodeIds = graphEngine->getNodeIds();
+    std::vector<host::graph::GraphEngine::NodeId> tailNodes;
+    for (const auto& id : allNodeIds)
     {
-        if (! inputId.isNull())
-            graphEngine->connect(inputId, newNodeId);
+        if (id == inputId || id == outputId || id == newNodeId)
+            continue;
+
+        bool hasOutgoing = false;
+        for (const auto& connection : connections)
+        {
+            if (connection.first == id)
+            {
+                hasOutgoing = true;
+                break;
+            }
+        }
+
+        if (! hasOutgoing)
+            tailNodes.push_back(id);
+    }
+
+    if (! tailNodes.empty())
+    {
+        // Chain after the tail nodes; do not touch the output edge yet.
+        sourcesToConnect = tailNodes;
+    }
+    else if (! nodesBeforeOutput.empty())
+    {
+        // Classic insert-at-end: disconnect the nodes feeding the output and
+        // rewire them through the new node.
+        spliceBeforeOutput = true;
+        sourcesToConnect = nodesBeforeOutput;
+        for (const auto& source : sourcesToConnect)
+            graphEngine->disconnect(source, outputId);
     }
     else
     {
-        for (const auto& source : previousSources)
-        {
-            if (source != newNodeId)
-                graphEngine->connect(source, newNodeId);
-        }
+        // No tail nodes and nothing wired to the output: feed from the input
+        // so the chain is input -> new -> output.
+        if (! inputId.isNull())
+            sourcesToConnect.push_back(inputId);
+    }
+
+    for (const auto& source : sourcesToConnect)
+    {
+        if (source != newNodeId)
+            graphEngine->connect(source, newNodeId);
     }
 
     if (! outputId.isNull())
@@ -450,27 +497,33 @@ void MainWindow::addPluginToGraph(const host::plugin::PluginInfo& info)
 
     if (! preparedOK)
     {
+        // Roll back the connections we added so the graph is left in the same
+        // shape it was before the failed insert: disconnect everything we
+        // wired to/from the new node, then restore the original output edges.
         if (! outputId.isNull())
             graphEngine->disconnect(newNodeId, outputId);
 
-        if (previousSources.empty())
+        for (const auto& source : sourcesToConnect)
         {
-            if (! inputId.isNull())
-                graphEngine->disconnect(inputId, newNodeId);
-        }
-        else
-        {
-            for (const auto& source : previousSources)
+            if (source != newNodeId)
                 graphEngine->disconnect(source, newNodeId);
         }
 
         if (! outputId.isNull())
         {
-            for (const auto& source : previousSources)
-                graphEngine->connect(source, outputId);
-
-            if (previousSources.empty() && ! inputId.isNull())
+            // Restore the original output edges. Only the splice-before-output
+            // path actually disconnected them; in the tail path there was
+            // nothing wired to the output, so restoring amounts to reconnecting
+            // input -> output when no tail/sources existed.
+            if (spliceBeforeOutput)
+            {
+                for (const auto& source : nodesBeforeOutput)
+                    graphEngine->connect(source, outputId);
+            }
+            else if (nodesBeforeOutput.empty() && ! inputId.isNull())
+            {
                 graphEngine->connect(inputId, outputId);
+            }
         }
 
         try
@@ -525,27 +578,61 @@ void MainWindow::addBuiltinNodeToGraph(const std::string& typeId)
     const auto inputId = graphEngine->getInputNode();
     const auto outputId = graphEngine->getOutputNode();
 
-    std::vector<host::graph::GraphEngine::NodeId> previousSources;
-    for (const auto& connection : graphEngine->getConnections())
+    auto connections = graphEngine->getConnections();
+    std::vector<host::graph::GraphEngine::NodeId> nodesBeforeOutput;
+    for (const auto& connection : connections)
     {
         if (connection.second == outputId && ! outputId.isNull())
-        {
-            previousSources.push_back(connection.first);
-            graphEngine->disconnect(connection.first, connection.second);
-        }
+            nodesBeforeOutput.push_back(connection.first);
     }
 
-    if (previousSources.empty())
+    // Prefer chaining after tail nodes (no outgoing edge) so a half-wired
+    // graph still routes audio through the new effect. Falls back to the
+    // classic insert-before-output splice, and finally to input -> new ->
+    // output when nothing is wired yet. Mirrors addPluginToGraph().
+    std::vector<host::graph::GraphEngine::NodeId> sourcesToConnect;
+    bool spliceBeforeOutput = false;
+
+    const auto allNodeIds = graphEngine->getNodeIds();
+    std::vector<host::graph::GraphEngine::NodeId> tailNodes;
+    for (const auto& id : allNodeIds)
     {
-        if (! inputId.isNull())
-            graphEngine->connect(inputId, newNodeId);
+        if (id == inputId || id == outputId || id == newNodeId)
+            continue;
+
+        bool hasOutgoing = false;
+        for (const auto& connection : connections)
+        {
+            if (connection.first == id)
+            {
+                hasOutgoing = true;
+                break;
+            }
+        }
+
+        if (! hasOutgoing)
+            tailNodes.push_back(id);
     }
-    else
+
+    if (! tailNodes.empty())
     {
-        for (const auto& source : previousSources)
-            if (source != newNodeId)
-                graphEngine->connect(source, newNodeId);
+        sourcesToConnect = tailNodes;
     }
+    else if (! nodesBeforeOutput.empty())
+    {
+        spliceBeforeOutput = true;
+        sourcesToConnect = nodesBeforeOutput;
+        for (const auto& source : sourcesToConnect)
+            graphEngine->disconnect(source, outputId);
+    }
+    else if (! inputId.isNull())
+    {
+        sourcesToConnect.push_back(inputId);
+    }
+
+    for (const auto& source : sourcesToConnect)
+        if (source != newNodeId)
+            graphEngine->connect(source, newNodeId);
 
     if (! outputId.isNull())
         graphEngine->connect(newNodeId, outputId);

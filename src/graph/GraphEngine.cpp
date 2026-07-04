@@ -154,9 +154,13 @@ void GraphEngine::removeNode(NodeId id)
         nodes_.erase(nodes_.begin() + static_cast<std::ptrdiff_t>(index));
         indexById_.erase(indexIt);
 
-        indexById_.clear();
-        for (size_t i = 0; i < nodes_.size(); ++i)
-            indexById_[toKey(nodes_[i].id)] = i;
+        // Decrement indices that pointed past the removed node so the map
+        // stays consistent without an O(n) full rebuild.
+        for (auto& idxEntry : indexById_)
+        {
+            if (idxEntry.second > index)
+                idxEntry.second -= 1;
+        }
 
         if (inputNode_ == id)
             inputNode_ = {};

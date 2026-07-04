@@ -2,6 +2,7 @@
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_gui_extra/juce_gui_extra.h>
+#include <juce_audio_utils/juce_audio_utils.h>
 #include <vector>
 #include <functional>
 
@@ -31,10 +32,6 @@ namespace host::gui
         void buildAudioTab();
         void buildPluginTab();
         void buildStartupTab();
-        void refreshDriverList();
-        void refreshDeviceLists();
-        void refreshEngineOptions();
-        void refreshControlPanelState();
         void layoutAudioTab();
         void layoutPluginTab();
         void layoutStartupTab();
@@ -42,6 +39,7 @@ namespace host::gui
         void notifyConfigChanged();
         void applyTranslations();
         void refreshLanguageOptions();
+        void refreshEngineControls();
         int getNumRows() override;
         void paintListBoxItem(int row, juce::Graphics& g, int width, int height, bool rowIsSelected) override;
         void changeListenerCallback(juce::ChangeBroadcaster* source) override;
@@ -56,22 +54,13 @@ namespace host::gui
         juce::Component* audioTab { nullptr };
         juce::Component* pluginTab { nullptr };
         juce::Component* startupTab { nullptr };
-        juce::ComboBox driverBox;
-        juce::ComboBox inputDeviceBox;
-        juce::ComboBox outputDeviceBox;
-        juce::ComboBox engineSampleRateBox;
-        juce::ComboBox engineBlockBox;
         juce::ComboBox resamplerQualityBox;
         juce::ToggleButton pdcToggle { "PDC" };
-        juce::Label driverLabel;
-        juce::Label inputDeviceLabel;
-        juce::Label outputDeviceLabel;
-        juce::Label sampleRateLabel;
-        juce::Label blockSizeLabel;
         juce::Label resamplerQualityLabel;
         juce::Label pdcLabel;
         juce::TextButton controlPanelButton { "Control Panel" };
         juce::Label controlPanelHint;
+        std::unique_ptr<juce::AudioDeviceSelectorComponent> deviceSelector;
         juce::ListBox pluginPathList { "PluginPaths", this };
         juce::TextButton addPathButton { "Add" };
         juce::TextButton removePathButton { "Remove" };

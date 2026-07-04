@@ -45,6 +45,11 @@ namespace host::gui
         buildStartupTab();
         pluginPathList.setRowHeight(24);
         host::i18n::manager().addChangeListener(this);
+        // The AudioDeviceSelectorComponent mutates the device setup directly;
+        // listen to the manager so we can persist sample rate / buffer size /
+        // device choices back into Config and keep the control-panel button
+        // state in sync after every change.
+        deviceManager.addChangeListener(this);
         updateDefaultPresetDisplay();
         applyTranslations();
     }
@@ -52,6 +57,7 @@ namespace host::gui
     PreferencesComponent::~PreferencesComponent()
     {
         host::i18n::manager().removeChangeListener(this);
+        deviceManager.removeChangeListener(this);
     }
 
     void PreferencesComponent::paint(juce::Graphics& g)
@@ -86,24 +92,20 @@ namespace host::gui
             label.setColour(juce::Label::textColourId, juce::Colours::whitesmoke);
         };
 
-        configureLabel(driverLabel, tr("preferences.audio.driver"));
-        configureLabel(inputDeviceLabel, tr("preferences.audio.input"));
-        configureLabel(outputDeviceLabel, tr("preferences.audio.output"));
-        configureLabel(sampleRateLabel, tr("preferences.audio.sampleRate"));
-        configureLabel(blockSizeLabel, tr("preferences.audio.blockSize"));
         configureLabel(resamplerQualityLabel, tr("preferences.audio.resamplerQuality"));
         configureLabel(pdcLabel, tr("preferences.audio.pdc"));
 
-        audioTab->addAndMakeVisible(driverLabel);
-        audioTab->addAndMakeVisible(driverBox);
-        audioTab->addAndMakeVisible(inputDeviceLabel);
-        audioTab->addAndMakeVisible(inputDeviceBox);
-        audioTab->addAndMakeVisible(outputDeviceLabel);
-        audioTab->addAndMakeVisible(outputDeviceBox);
-        audioTab->addAndMakeVisible(sampleRateLabel);
-        audioTab->addAndMakeVisible(engineSampleRateBox);
-        audioTab->addAndMakeVisible(blockSizeLabel);
-        audioTab->addAndMakeVisible(engineBlockBox);
+        // Embed the full AudioDeviceSelectorComponent so the audio tab offers
+        // the same detailed control as the standalone "Audio Device Settings"
+        // dialog did: driver, input/output device, active channel count, sample
+        // rate, buffer size, and visible-but-disabled input/output channel
+        // toggles. This replaces the duplicated, less capable combo boxes that
+        // previously lived here and could not toggle individual channels.
+        deviceSelector = std::make_unique<juce::AudioDeviceSelectorComponent>(
+            deviceManager, 0, 2, 0, 2, true, true, true, false);
+        deviceSelector->setSize(560, 320);
+        audioTab->addAndMakeVisible(*deviceSelector);
+
         audioTab->addAndMakeVisible(resamplerQualityLabel);
         audioTab->addAndMakeVisible(resamplerQualityBox);
         audioTab->addAndMakeVisible(pdcLabel);
@@ -185,107 +187,12 @@ namespace host::gui
                 deviceManager.getAudioDeviceSetup(setup);
                 const auto error = deviceManager.setAudioDeviceSetup(setup, true);
                 reportAudioDeviceError("setAudioDeviceSetup(afterControlPanel)", error, true);
-                refreshDeviceLists();
+                refreshEngineControls();
             }
         };
-        refreshControlPanelState();
+        refreshEngineControls();
 
         tabs.addTab(tr("preferences.tab.audio"), juce::Colours::grey, audioTab, true);
-
-        driverBox.onChange = [this]
-        {
-            if (isUpdating)
-                return;
-
-            const auto selectedDriver = driverBox.getText();
-            if (selectedDriver.isNotEmpty())
-            {
-                deviceManager.setCurrentAudioDeviceType(selectedDriver, true);
-                if (deviceManager.getCurrentAudioDeviceType() != selectedDriver)
-                {
-                    reportAudioDeviceError("setCurrentAudioDeviceType",
-                                           "Requested device type was not applied: " + selectedDriver,
-                                           true);
-                }
-                refreshDeviceLists();
-            }
-        };
-
-        inputDeviceBox.onChange = [this]
-        {
-            if (isUpdating)
-                return;
-
-            juce::AudioDeviceManager::AudioDeviceSetup setup;
-            deviceManager.getAudioDeviceSetup(setup);
-            const auto selected = inputDeviceBox.getText();
-            setup.inputDeviceName = (selected.isNotEmpty() && selected != "(None)") ? selected : juce::String();
-            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
-            reportAudioDeviceError("setAudioDeviceSetup(input)", error, true);
-            refreshDeviceLists();
-        };
-
-        outputDeviceBox.onChange = [this]
-        {
-            if (isUpdating)
-                return;
-
-            juce::AudioDeviceManager::AudioDeviceSetup setup;
-            deviceManager.getAudioDeviceSetup(setup);
-            const auto selected = outputDeviceBox.getText();
-            setup.outputDeviceName = (selected.isNotEmpty() && selected != "(None)") ? selected : juce::String();
-            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
-            reportAudioDeviceError("setAudioDeviceSetup(output)", error, true);
-            refreshDeviceLists();
-        };
-
-        engineSampleRateBox.onChange = [this]
-        {
-            if (isUpdating)
-                return;
-
-            const auto selectedRate = engineSampleRateBox.getText().getDoubleValue();
-            if (selectedRate <= 0.0)
-                return;
-
-            juce::AudioDeviceManager::AudioDeviceSetup setup;
-            deviceManager.getAudioDeviceSetup(setup);
-            setup.sampleRate = selectedRate;
-            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
-            reportAudioDeviceError("setAudioDeviceSetup(sampleRate)", error, true);
-
-            auto cfg = deviceEngine.getEngineConfig();
-            cfg.sampleRate = selectedRate;
-            deviceEngine.setEngineConfig(cfg);
-            refreshEngineOptions();
-            config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
-            notifyConfigChanged();
-        };
-
-        engineBlockBox.onChange = [this]
-        {
-            if (isUpdating)
-                return;
-
-            const auto selectedBlock = engineBlockBox.getText().getIntValue();
-            if (selectedBlock <= 0)
-                return;
-
-            juce::AudioDeviceManager::AudioDeviceSetup setup;
-            deviceManager.getAudioDeviceSetup(setup);
-            setup.bufferSize = selectedBlock;
-            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
-            reportAudioDeviceError("setAudioDeviceSetup(bufferSize)", error, true);
-
-            auto cfg = deviceEngine.getEngineConfig();
-            cfg.blockSize = selectedBlock;
-            deviceEngine.setEngineConfig(cfg);
-            refreshEngineOptions();
-            config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
-            notifyConfigChanged();
-        };
-
-        refreshDriverList();
     }
 
     void PreferencesComponent::buildPluginTab()
@@ -412,189 +319,7 @@ namespace host::gui
         refreshLanguageOptions();
     }
 
-    void PreferencesComponent::refreshDriverList()
-    {
-        const juce::ScopedValueSetter<bool> guard(isUpdating, true);
-        driverBox.clear(juce::dontSendNotification);
-
-        auto& types = deviceManager.getAvailableDeviceTypes();
-        const auto currentType = deviceManager.getCurrentAudioDeviceType();
-        int selectedId = 0;
-
-        for (int i = 0; i < types.size(); ++i)
-        {
-            if (auto* type = types[i])
-            {
-                type->scanForDevices();
-                const auto itemId = i + 1;
-                driverBox.addItem(type->getTypeName(), itemId);
-                if (type->getTypeName() == currentType)
-                    selectedId = itemId;
-            }
-        }
-
-        if (driverBox.getNumItems() == 0)
-            return;
-
-        if (selectedId == 0)
-        {
-            selectedId = driverBox.getItemId(0);
-            const auto fallbackType = driverBox.getItemText(0);
-            deviceManager.setCurrentAudioDeviceType(fallbackType, true);
-            if (deviceManager.getCurrentAudioDeviceType() != fallbackType)
-            {
-                reportAudioDeviceError("setCurrentAudioDeviceType(fallback)",
-                                       "Requested fallback device type was not applied: " + fallbackType,
-                                       false);
-            }
-        }
-
-        driverBox.setSelectedId(selectedId, juce::dontSendNotification);
-        refreshDeviceLists();
-    }
-
-    void PreferencesComponent::refreshDeviceLists()
-    {
-        const juce::ScopedValueSetter<bool> guard(isUpdating, true);
-        inputDeviceBox.clear(juce::dontSendNotification);
-        outputDeviceBox.clear(juce::dontSendNotification);
-
-        juce::AudioDeviceManager::AudioDeviceSetup setup;
-        deviceManager.getAudioDeviceSetup(setup);
-
-        auto currentTypeName = deviceManager.getCurrentAudioDeviceType();
-        auto& types = deviceManager.getAvailableDeviceTypes();
-        juce::StringArray inputNames;
-        juce::StringArray outputNames;
-
-        for (auto* type : types)
-        {
-            if (type != nullptr && type->getTypeName() == currentTypeName)
-            {
-                type->scanForDevices();
-                inputNames = type->getDeviceNames(true);
-                outputNames = type->getDeviceNames(false);
-                break;
-            }
-        }
-
-        bool updatedSelection = false;
-        if (setup.inputDeviceName.isEmpty() && inputNames.size() > 0)
-        {
-            setup.inputDeviceName = inputNames[0];
-            updatedSelection = true;
-        }
-
-        if (setup.outputDeviceName.isEmpty() && outputNames.size() > 0)
-        {
-            setup.outputDeviceName = outputNames[0];
-            updatedSelection = true;
-        }
-
-        if (updatedSelection)
-        {
-            const auto error = deviceManager.setAudioDeviceSetup(setup, true);
-            reportAudioDeviceError("setAudioDeviceSetup(autoSelect)", error, false);
-        }
-
-        deviceManager.getAudioDeviceSetup(setup);
-
-        constexpr auto noneText = "(None)";
-        inputDeviceBox.addItem(noneText, 1);
-        outputDeviceBox.addItem(noneText, 1);
-
-        int inputId = 2;
-        for (const auto& name : inputNames)
-            inputDeviceBox.addItem(name, inputId++);
-
-        int outputId = 2;
-        for (const auto& name : outputNames)
-            outputDeviceBox.addItem(name, outputId++);
-
-        const auto inputSelection = setup.inputDeviceName.isNotEmpty() ? setup.inputDeviceName : juce::String(noneText);
-        const auto outputSelection = setup.outputDeviceName.isNotEmpty() ? setup.outputDeviceName : juce::String(noneText);
-
-        auto findItemIdForText = [](juce::ComboBox& box, const juce::String& text)
-        {
-            for (int i = 0; i < box.getNumItems(); ++i)
-            {
-                if (box.getItemText(i) == text)
-                    return box.getItemId(i);
-            }
-            return 0;
-        };
-
-        if (auto id = findItemIdForText(inputDeviceBox, inputSelection); id != 0)
-            inputDeviceBox.setSelectedId(id, juce::dontSendNotification);
-        else
-            inputDeviceBox.setText(inputSelection, juce::dontSendNotification);
-
-        if (auto id = findItemIdForText(outputDeviceBox, outputSelection); id != 0)
-            outputDeviceBox.setSelectedId(id, juce::dontSendNotification);
-       else
-           outputDeviceBox.setText(outputSelection, juce::dontSendNotification);
-
-       refreshEngineOptions();
-       refreshControlPanelState();
-   }
-
-   void PreferencesComponent::refreshEngineOptions()
-    {
-        const juce::ScopedValueSetter<bool> guard(isUpdating, true);
-        engineSampleRateBox.clear(juce::dontSendNotification);
-        engineBlockBox.clear(juce::dontSendNotification);
-
-        juce::AudioDeviceManager::AudioDeviceSetup setup;
-        deviceManager.getAudioDeviceSetup(setup);
-
-        auto* currentDevice = deviceManager.getCurrentAudioDevice();
-
-        juce::Array<double> sampleRates;
-        juce::Array<int> bufferSizes;
-
-        if (currentDevice != nullptr)
-        {
-            sampleRates = currentDevice->getAvailableSampleRates();
-            bufferSizes = currentDevice->getAvailableBufferSizes();
-        }
-
-        if (sampleRates.isEmpty())
-            sampleRates = { 44100.0, 48000.0, 96000.0 };
-
-        if (bufferSizes.isEmpty())
-            bufferSizes = { 128, 256, 512 };
-
-        int rateId = 1;
-        int selectedRateId = 0;
-        for (auto rate : sampleRates)
-        {
-            const auto label = juce::String(rate, 0);
-            engineSampleRateBox.addItem(label, rateId);
-            if (std::abs(rate - setup.sampleRate) < 1.0)
-                selectedRateId = rateId;
-            ++rateId;
-        }
-
-        int blockId = 1;
-        int selectedBlockId = 0;
-        for (auto size : bufferSizes)
-        {
-            engineBlockBox.addItem(juce::String(size), blockId);
-            if (size == setup.bufferSize)
-                selectedBlockId = blockId;
-            ++blockId;
-        }
-
-        if (selectedRateId == 0)
-            selectedRateId = 1;
-        if (selectedBlockId == 0)
-            selectedBlockId = 1;
-
-        engineSampleRateBox.setSelectedId(selectedRateId, juce::dontSendNotification);
-        engineBlockBox.setSelectedId(selectedBlockId, juce::dontSendNotification);
-    }
-
-    void PreferencesComponent::refreshControlPanelState()
+    void PreferencesComponent::refreshEngineControls()
     {
         const juce::ScopedValueSetter<bool> guard(isUpdating, true);
 
@@ -614,6 +339,49 @@ namespace host::gui
             controlPanelHint.setText(tr("preferences.audio.controlPanelUnavailable"),
                                      juce::dontSendNotification);
         }
+
+        // The AudioDeviceSelectorComponent can change sample rate / buffer
+        // size / active channels. Mirror those into the device engine config
+        // and persist them so the choice survives a restart. DeviceEngine is
+        // already registered as an AudioIODeviceCallback, so it picks up the
+        // new format from audioDeviceAboutToStart; we additionally push the
+        // engine config so resampler ratios and the persisted config stay
+        // aligned with whatever the selector just applied.
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        deviceManager.getAudioDeviceSetup(setup);
+
+        auto cfg = deviceEngine.getEngineConfig();
+        bool changed = false;
+        if (device != nullptr)
+        {
+            const double deviceRate = device->getCurrentSampleRate();
+            const int deviceBlock = device->getCurrentBufferSizeSamples();
+            if (deviceRate > 0.0 && std::abs(deviceRate - cfg.sampleRate) > 0.5)
+            {
+                cfg.sampleRate = deviceRate;
+                changed = true;
+            }
+            if (deviceBlock > 0 && deviceBlock != cfg.blockSize)
+            {
+                cfg.blockSize = deviceBlock;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            deviceEngine.setEngineConfig(cfg);
+            config.setEngineSettings({ cfg.sampleRate, cfg.blockSize });
+            notifyConfigChanged();
+        }
+        else
+        {
+            // Still persist the device selection (input/output device names)
+            // even when the numeric format is unchanged, so the chosen device
+            // is remembered. AudioDeviceManager persists its own setup via the
+            // AudioDeviceSetup, but Config is the host's source of truth.
+            notifyConfigChanged();
+        }
     }
 
     void PreferencesComponent::layoutAudioTab()
@@ -622,9 +390,18 @@ namespace host::gui
             return;
 
         auto area = audioTab->getLocalBounds().reduced(20);
-        const auto labelWidth = 160;
+        const auto labelWidth = 200;
         const auto rowHeight = 48;
         const auto controlInset = 6;
+
+        // The embedded AudioDeviceSelectorComponent owns the driver / device /
+        // sample-rate / buffer-size / channel toggles, so it takes the top of
+        // the tab. Host-engine-only options (resampler quality, PDC, vendor
+        // control panel) live below it.
+        const int selectorHeight = 320;
+        if (deviceSelector != nullptr)
+            deviceSelector->setBounds(area.removeFromTop(selectorHeight).reduced(controlInset));
+        area.removeFromTop(12);
 
         auto layoutRow = [&](juce::Label& label, juce::Component& field)
         {
@@ -635,11 +412,6 @@ namespace host::gui
             area.removeFromTop(8);
         };
 
-        layoutRow(driverLabel, driverBox);
-        layoutRow(inputDeviceLabel, inputDeviceBox);
-        layoutRow(outputDeviceLabel, outputDeviceBox);
-        layoutRow(sampleRateLabel, engineSampleRateBox);
-        layoutRow(blockSizeLabel, engineBlockBox);
         layoutRow(resamplerQualityLabel, resamplerQualityBox);
         layoutRow(pdcLabel, pdcToggle);
 
@@ -703,11 +475,6 @@ namespace host::gui
 
     void PreferencesComponent::applyTranslations()
     {
-        driverLabel.setText(tr("preferences.audio.driver"), juce::dontSendNotification);
-        inputDeviceLabel.setText(tr("preferences.audio.input"), juce::dontSendNotification);
-        outputDeviceLabel.setText(tr("preferences.audio.output"), juce::dontSendNotification);
-        sampleRateLabel.setText(tr("preferences.audio.sampleRate"), juce::dontSendNotification);
-        blockSizeLabel.setText(tr("preferences.audio.blockSize"), juce::dontSendNotification);
         resamplerQualityLabel.setText(tr("preferences.audio.resamplerQuality"), juce::dontSendNotification);
         pdcLabel.setText(tr("preferences.audio.pdc"), juce::dontSendNotification);
         pdcToggle.setButtonText(tr("preferences.audio.pdc"));
@@ -769,7 +536,16 @@ namespace host::gui
 
     void PreferencesComponent::changeListenerCallback(juce::ChangeBroadcaster* source)
     {
-        if (source == &host::i18n::manager())
+        if (source == &deviceManager)
+        {
+            // A device change came from the embedded selector (or the vendor
+            // control panel). Refresh the engine/control-panel state and
+            // persist the new settings. Guard against recursive notifications
+            // triggered by our own setEngineConfig.
+            if (! isUpdating)
+                refreshEngineControls();
+        }
+        else if (source == &host::i18n::manager())
             applyTranslations();
     }
 

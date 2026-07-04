@@ -115,6 +115,12 @@ PluginSettingsComponent::PluginSettingsComponent(std::shared_ptr<host::graph::Gr
         setSize(kDefaultWidth, kDefaultHeight);
 
         refresh();
+
+        // Watch the target node so this panel auto-closes (and frees the
+        // dialog window that owns it) if the plugin is removed from the graph
+        // while the settings dialog is open. Without this, deleting the node
+        // and then closing the dialog dereferences a dead VstFxNode.
+        startTimerHz(20);
     }
 
 void PluginSettingsComponent::refresh()
@@ -164,6 +170,9 @@ void PluginSettingsComponent::updateContent()
     auto graphPtr = graph.lock();
     if (! graphPtr)
     {
+        // Graph gone: surface as unavailable and let the timer close the
+        // hosting dialog.
+        closeHostDialogIfPresent();
         nameEditor.setEnabled(false);
         bypassToggle.setEnabled(false);
         statusValue.setText(tr("plugin.settings.unavailable"), juce::dontSendNotification);
@@ -179,6 +188,9 @@ void PluginSettingsComponent::updateContent()
     auto* vstNode = dynamic_cast<host::graph::nodes::VstFxNode*>(node.get());
     if (! vstNode)
     {
+        // Node was removed from the graph. Close the dialog so we never touch
+        // a dangling node reference again.
+        closeHostDialogIfPresent();
         nameEditor.setEnabled(false);
         bypassToggle.setEnabled(false);
         statusValue.setText(tr("plugin.settings.unavailable"), juce::dontSendNotification);
@@ -320,9 +332,15 @@ void PluginSettingsComponent::openEditor()
     // the window follows it - no host<->plugin resize loop, so editors stop
     // shrinking on focus loss and stop clipping async (re)sizes on open.
     const bool editorResizable = plugin->isEditorResizable();
+    // Pass the graph + node id so the editor window auto-closes if the plugin
+    // node is removed from the graph while the editor is open. This prevents
+    // use-after-free crashes when the node is deleted out from under the open
+    // editor.
     new host::gui::PluginEditorWindow(juce::String(vstNode->name()),
                                       std::move(editor),
-                                      editorResizable);
+                                      editorResizable,
+                                      graph,
+                                      targetId);
 }
 
 void PluginSettingsComponent::savePreset()
@@ -426,5 +444,48 @@ void PluginSettingsComponent::loadPreset()
     }
 
     updateContent();
+}
+
+void PluginSettingsComponent::timerCallback()
+{
+    auto graphPtr = graph.lock();
+    if (! graphPtr)
+    {
+        closeHostDialogIfPresent();
+        return;
+    }
+
+    // If the node has been removed from the graph, close the hosting dialog so
+    // the panel (and its captured NodeId) are destroyed before any further
+    // interaction can dereference the dead node.
+    if (auto node = graphPtr->getNode(targetId))
+    {
+        if (dynamic_cast<host::graph::nodes::VstFxNode*>(node.get()) == nullptr)
+            closeHostDialogIfPresent();
+    }
+    else
+    {
+        closeHostDialogIfPresent();
+    }
+}
+
+void PluginSettingsComponent::closeHostDialogIfPresent()
+{
+    // Only attempt to close once. The dialog window owns this component, so
+    // closing it deletes us too; stop the timer first to avoid callbacks
+    // during destruction.
+    if (! std::exchange(closedDialog_, true))
+    {
+        stopTimer();
+
+        if (auto* dw = findParentComponentOfClass<juce::DialogWindow>())
+        {
+            dw->exitModalState(0);
+        }
+        else if (auto* dw = dynamic_cast<juce::DialogWindow*>(findParentComponentOfClass<juce::DocumentWindow>()))
+        {
+            dw->exitModalState(0);
+        }
+    }
 }
 } // namespace host::gui

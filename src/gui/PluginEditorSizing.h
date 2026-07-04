@@ -3,6 +3,9 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <memory>
+#include <optional>
+
+#include "graph/GraphEngine.h"
 
 namespace host::gui
 {
@@ -25,13 +28,27 @@ namespace host::gui
     // For resizable editors a corner resizer is added so the user can grow the
     // window; the editor component receives the new bounds via its resized().
     // For non-resizable editors the window simply tracks the editor.
+    //
+    // Lifecycle safety: a VST plugin can be removed from the graph (and thus
+    // its AudioProcessor destroyed) while the editor window is still open.
+    // If the window kept using the editor component after that, it would touch
+    // freed memory and crash. The graph-tracked constructor below watches the
+    // owning GraphEngine + NodeId via a timer; if the node is gone the window
+    // closes itself before anyone can touch the dead editor. This fixes the
+    // "open settings -> delete node -> close window -> crash" sequence.
 
     constexpr int kPluginEditorMinWidth = 50;
     constexpr int kPluginEditorMinHeight = 50;
 
-    class PluginEditorWindow final : public juce::DocumentWindow
+    class PluginEditorWindow final : public juce::DocumentWindow,
+                                     private juce::Timer
     {
     public:
+        using NodeId = host::graph::GraphEngine::NodeId;
+
+        // Legacy constructor: caller owns lifetime. The editor is assumed to
+        // outlive the window. Prefer the graph-tracked overload below so the
+        // window auto-closes when its node is removed from the graph.
         PluginEditorWindow(const juce::String& name,
                            std::unique_ptr<juce::Component> editorComponent,
                            bool editorResizable)
@@ -61,11 +78,64 @@ namespace host::gui
             setVisible(true);
         }
 
+        // Graph-tracked constructor: the window watches the node identified by
+        // nodeId in graphEngine. When that node disappears (removed from the
+        // graph, or the graph itself is reset/replaced), the window closes
+        // itself on the message thread and releases the editor, so the user
+        // never interacts with a plugin that no longer exists.
+        PluginEditorWindow(const juce::String& name,
+                           std::unique_ptr<juce::Component> editorComponent,
+                           bool editorResizable,
+                           std::weak_ptr<host::graph::GraphEngine> graphEngine,
+                           NodeId nodeId)
+            : PluginEditorWindow(name, std::move(editorComponent), editorResizable)
+        {
+            trackedGraph_ = std::move(graphEngine);
+            trackedNodeId_ = nodeId;
+            isTracked_ = true;
+            startTimerHz(20);
+        }
+
         ~PluginEditorWindow() override { clearContentComponent(); }
 
         void closeButtonPressed() override { delete this; }
 
     private:
+        void timerCallback() override
+        {
+            if (! isTracked_)
+                return;
+
+            bool shouldClose = false;
+            if (auto graph = trackedGraph_.lock())
+            {
+                // getNode returns null when the node id is no longer registered
+                // (removed or graph cleared). That is the signal to close.
+                if (graph->getNode(trackedNodeId_) == nullptr)
+                    shouldClose = true;
+            }
+            else
+            {
+                // The graph itself was destroyed. Close immediately.
+                shouldClose = true;
+            }
+
+            if (shouldClose)
+            {
+                stopTimer();
+                isTracked_ = false;
+                // Close on the next message round to avoid re-entrancy while
+                // the audio thread may still be mid-teardown. Use a
+                // SafePointer so that if the user already closed the window in
+                // the meantime we do not touch a deleted object.
+                juce::MessageManager::callAsync([safe = juce::Component::SafePointer<PluginEditorWindow>(this)]()
+                {
+                    if (auto* w = safe.getComponent())
+                        w->closeButtonPressed();
+                });
+            }
+        }
+
         static juce::Rectangle<int> resolveUserArea()
         {
             const auto* display = juce::Desktop::getInstance().getDisplays()
@@ -93,5 +163,9 @@ namespace host::gui
         }
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PluginEditorWindow)
+
+        bool isTracked_ { false };
+        std::weak_ptr<host::graph::GraphEngine> trackedGraph_;
+        NodeId trackedNodeId_ {};
     };
 } // namespace host::gui

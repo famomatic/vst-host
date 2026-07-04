@@ -31,7 +31,11 @@ public:
 
     void prepare(int capacity)
     {
-        const auto cap = std::max(8, capacity);
+        // Always allow a healthy backlog so rapid UI dragging does not
+        // overflow before the audio thread gets to drain. The ring is cheap
+        // (just Entry pairs) and never reallocates after prepare, so a generous
+        // minimum is safe on the audio thread.
+        const auto cap = std::max(128, capacity);
         ring_.resize(static_cast<std::size_t>(cap));
         capacity_ = static_cast<std::size_t>(cap);
         head_.store(0, std::memory_order_relaxed);
@@ -51,27 +55,25 @@ public:
         if (ring_.empty())
             return; // not prepared yet - message-thread fallback handled by caller
 
-        // Coalesce: if the same id is already queued, update it in place
-        // rather than enqueuing a duplicate. This bounds queue depth under
-        // rapid UI dragging.
+        // Note: we deliberately do NOT scan the ring to coalesce an existing
+        // entry for the same id. The audio thread drains [head_, tail_) and a
+        // concurrent in-place write of value from the message thread would
+        // race the audio thread's read, producing a torn double. Instead we
+        // always enqueue a fresh entry; the ring is sized generously (see
+        // prepare) so rapid UI dragging does not overflow, and when it does
+        // overflow the oldest entry is dropped so the freshest value for
+        // this id still wins on the next drain.
         const auto t = tail_.load(std::memory_order_relaxed);
         const auto h = head_.load(std::memory_order_acquire);
-        std::size_t i = h;
-        while (i != t)
-        {
-            if (ring_[i].idHash == idHash)
-            {
-                ring_[i].value = value;
-                return;
-            }
-            i = (i + 1) % capacity_;
-        }
 
         const auto next = (t + 1) % capacity_;
         if (next == h)
         {
             // Full: overwrite the oldest. This loses a change but keeps the
             // freshest for this id, which is what matters for live tweaking.
+            // head_ is only advanced by the audio thread, so this advance here
+            // is safe from the producer side; the audio thread will simply see
+            // the updated head on its next drain.
             const auto newHead = (h + 1) % capacity_;
             ring_[t] = { idHash, value };
             head_.store(newHead, std::memory_order_release);

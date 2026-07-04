@@ -31,6 +31,7 @@ namespace host::gui
         void mouseDown(const juce::MouseEvent& event) override;
         void mouseDrag(const juce::MouseEvent& event) override;
         void mouseUp(const juce::MouseEvent& event) override;
+        void mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel) override;
         bool keyPressed(const juce::KeyPress& key) override;
 
     private:
@@ -47,6 +48,7 @@ namespace host::gui
         void showNodeContextMenu(NodeId id, juce::Point<int> screenPosition);
         void showBackgroundMenu(juce::Point<int> screenPosition);
         void drawConnections(juce::Graphics& g);
+        void drawScrollIndicators(juce::Graphics& g);
         void clearConnectionsFrom(NodeId id);
         void clearConnectionsTo(NodeId id);
         void selectNode(NodeId id);

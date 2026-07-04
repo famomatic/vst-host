@@ -9,7 +9,8 @@
 
 namespace host::gui
 {
-    class PluginSettingsComponent : public juce::Component
+    class PluginSettingsComponent : public juce::Component,
+                                    private juce::Timer
     {
     public:
         PluginSettingsComponent(std::shared_ptr<host::graph::GraphEngine> graphEngine,
@@ -27,6 +28,8 @@ namespace host::gui
         void openEditor();
         void savePreset();
         void loadPreset();
+        void timerCallback() override;
+        void closeHostDialogIfPresent();
 
         std::weak_ptr<host::graph::GraphEngine> graph;
         host::graph::GraphEngine::NodeId targetId;
@@ -50,5 +53,6 @@ namespace host::gui
         juce::TextButton openEditorButton;
         juce::TextButton savePresetButton;
         juce::TextButton loadPresetButton;
+        bool closedDialog_ { false };
     };
 } // namespace host::gui

@@ -333,6 +333,8 @@ void GraphView::paint(juce::Graphics& g)
                    getLocalBounds(),
                    juce::Justification::centred);
     }
+
+    drawScrollIndicators(g);
 }
 
 void GraphView::resized()
@@ -963,6 +965,41 @@ void GraphView::deleteSelectedNode()
     const auto key = selectedNode.toString().toStdString();
 
     auto connections = graph->getConnections();
+    // Bridge the graph around the deleted node: for every incoming edge
+    // A->B and outgoing edge B->C, add A->C so the chain stays connected.
+    // This is the "delete a middle plugin without breaking the path" behaviour
+    // the user asked for. We only bridge across simple predecessors/successors;
+    // the existing disconnect still clears any edges touching the node.
+    std::vector<std::pair<NodeId, NodeId>> incoming;
+    std::vector<NodeId> outgoing;
+    for (const auto& connection : connections)
+    {
+        if (connection.second == selectedNode)
+            incoming.emplace_back(connection.first, selectedNode);
+        else if (connection.first == selectedNode)
+            outgoing.push_back(connection.second);
+    }
+
+    for (const auto& in : incoming)
+    {
+        for (const auto& out : outgoing)
+        {
+            if (in.first == out)
+                continue;
+            try
+            {
+                graph->connect(in.first, out);
+            }
+            catch (const std::exception&)
+            {
+                // A cycle or duplicate would throw; ignore and keep going.
+            }
+        }
+    }
+
+    // Now remove every edge that touches the node, including the original
+    // incoming/outgoing ones (the bridge edges we added above do not touch
+    // the deleted node and survive).
     for (const auto& connection : connections)
     {
         if (connection.first == selectedNode || connection.second == selectedNode)
@@ -1061,14 +1098,22 @@ void GraphView::centerOnSelectedNode()
 
 void GraphView::setViewOffset(juce::Point<float> newOffset)
 {
+    // Allow the view to roam freely, including negative offsets, so the user
+    // can scroll the canvas in any direction even when the content is smaller
+    // than the viewport. We still clamp to a generous margin so nodes never
+    // disappear completely off-screen with no way back.
     const auto content = computeContentBounds();
     const float width = static_cast<float>(std::max(1, getWidth()));
     const float height = static_cast<float>(std::max(1, getHeight()));
-    const float maxX = std::max(0.0f, content.getRight() - width);
-    const float maxY = std::max(0.0f, content.getBottom() - height);
 
-    viewOffset.x = juce::jlimit(0.0f, maxX, newOffset.x);
-    viewOffset.y = juce::jlimit(0.0f, maxY, newOffset.y);
+    constexpr float kScrollMargin = 2000.0f;
+    const float minX = content.getX() - kScrollMargin;
+    const float maxX = std::max(minX, content.getRight() - width + kScrollMargin);
+    const float minY = content.getY() - kScrollMargin;
+    const float maxY = std::max(minY, content.getBottom() - height + kScrollMargin);
+
+    viewOffset.x = juce::jlimit(minX, maxX, newOffset.x);
+    viewOffset.y = juce::jlimit(minY, maxY, newOffset.y);
 
     updateComponentPositions();
     repaint();
@@ -1077,6 +1122,86 @@ void GraphView::setViewOffset(juce::Point<float> newOffset)
 void GraphView::panBy(juce::Point<float> delta)
 {
     setViewOffset(viewOffset + delta);
+}
+void GraphView::mouseWheelMove(const juce::MouseEvent& event, const juce::MouseWheelDetails& wheel)
+{
+    // Two-finger / trackpad horizontal deltas arrive in wheel.deltaX. A mouse
+    // with a horizontal wheel also surfaces here. Shift converts a vertical
+    // wheel into horizontal scrolling, matching common DAW/host conventions.
+    float dx = 0.0f;
+    float dy = 0.0f;
+
+    const float speed = 64.0f;
+    if (wheel.isSmooth)
+    {
+        dx = wheel.deltaX * speed * 4.0f;
+        dy = wheel.deltaY * speed * 4.0f;
+    }
+    else
+    {
+        dy = wheel.deltaY * speed;
+        dx = wheel.deltaX * speed;
+    }
+
+    if (event.mods.isShiftDown())
+    {
+        dx += dy;
+        dy = 0.0f;
+    }
+
+    if (dx != 0.0f || dy != 0.0f)
+        panBy({ -dx, -dy });
+}
+
+void GraphView::drawScrollIndicators(juce::Graphics& g)
+{
+    // Lightweight scroll indicators drawn over the canvas. They show whether
+    // there is content beyond the visible edges and double as the scrollbar the
+    // user requested. The knob position reflects the current viewOffset within
+    // the scrollable range.
+    const auto content = computeContentBounds();
+    const float viewW = static_cast<float>(std::max(1, getWidth()));
+    const float viewH = static_cast<float>(std::max(1, getHeight()));
+
+    constexpr float kMargin = 2000.0f;
+    const float totalW = content.getWidth() + kMargin * 2.0f;
+    const float totalH = content.getHeight() + kMargin * 2.0f;
+    const float originX = content.getX() - kMargin;
+    const float originY = content.getY() - kMargin;
+
+    const bool showH = totalW > viewW;
+    const bool showV = totalH > viewH;
+    if (! showH && ! showV)
+        return;
+
+    const float trackSize = 10.0f;
+    const float corner = 4.0f;
+
+    if (showH)
+    {
+        const auto track = juce::Rectangle<float>(0.0f, viewH - trackSize, viewW, trackSize);
+        g.setColour(juce::Colours::black.withAlpha(0.45f));
+        g.fillRoundedRectangle(track, corner);
+
+        const float t = juce::jlimit(0.0f, 1.0f, (viewOffset.x - originX) / juce::jmax(1.0f, totalW - viewW));
+        const float knobW = juce::jmax(40.0f, viewW * (viewW / juce::jmax(1.0f, totalW)));
+        juce::Rectangle<float> knob(t * (viewW - knobW), viewH - trackSize, knobW, trackSize);
+        g.setColour(juce::Colours::orange.withAlpha(0.8f));
+        g.fillRoundedRectangle(knob.reduced(1.0f), corner - 1.0f);
+    }
+
+    if (showV)
+    {
+        const auto track = juce::Rectangle<float>(viewW - trackSize, 0.0f, trackSize, viewH);
+        g.setColour(juce::Colours::black.withAlpha(0.45f));
+        g.fillRoundedRectangle(track, corner);
+
+        const float t = juce::jlimit(0.0f, 1.0f, (viewOffset.y - originY) / juce::jmax(1.0f, totalH - viewH));
+        const float knobH = juce::jmax(40.0f, viewH * (viewH / juce::jmax(1.0f, totalH)));
+        juce::Rectangle<float> knob(viewW - trackSize, t * (viewH - knobH), trackSize, knobH);
+        g.setColour(juce::Colours::orange.withAlpha(0.8f));
+        g.fillRoundedRectangle(knob.reduced(1.0f), corner - 1.0f);
+    }
 }
 
 juce::Rectangle<float> GraphView::computeContentBounds() const

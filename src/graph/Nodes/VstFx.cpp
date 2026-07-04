@@ -27,8 +27,41 @@ namespace host::graph::nodes
 
     void VstFxNode::process(ProcessContext& ctx)
     {
-        if (! instance_ || bypassed_.load())
+        if (! instance_)
             return;
+
+        // Bypass must still forward the input to the output. Previously this
+        // returned immediately, leaving the node's output buffer untouched and
+        // producing garbage/silence downstream because the runtime only copies
+        // the plugin output onto the node buffer when process() actually runs.
+        if (bypassed_.load())
+        {
+            const int frames = std::max(0, ctx.numFrames);
+            const int inputs = std::max(0, ctx.numInputChannels);
+            const int outputs = std::max(0, ctx.numOutputChannels);
+            if (frames == 0 || outputs == 0 || ctx.outputChannels == nullptr)
+                return;
+
+            for (int outCh = 0; outCh < outputs; ++outCh)
+            {
+                float* dest = ctx.outputChannels[outCh];
+                if (dest == nullptr)
+                    continue;
+
+                if (inputs > 0 && ctx.inputChannels != nullptr)
+                {
+                    const int srcCh = outCh % inputs;
+                    const float* src = ctx.inputChannels[srcCh];
+                    if (src != nullptr)
+                    {
+                        juce::FloatVectorOperations::copy(dest, src, frames);
+                        continue;
+                    }
+                }
+                juce::FloatVectorOperations::clear(dest, frames);
+            }
+            return;
+        }
 
         instance_->process(ctx.inputChannels,
                            ctx.numInputChannels,

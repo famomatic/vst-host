@@ -38,7 +38,6 @@ private:
 
     void initialiseGraph();
     void openPreferences();
-    void showDeviceSelector();
     void loadProject();
     void saveProject();
     void rebuildGraphFromProject(const host::persist::Project& project);

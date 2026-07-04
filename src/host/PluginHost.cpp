@@ -47,6 +47,16 @@ namespace
             if (! instance)
                 return;
 
+            // Match the plugin's bus layout to the host channel count before
+            // prepareToPlay. Some VST3s (e.g. T-De-Esser 2) process garbage or
+            // distort when their requested bus configuration is not set up:
+            // they expect the host to call setBusesLayout with the actual
+            // channel count, otherwise their internal buffers are mis-sized
+            // relative to what processBlock receives. We probe the plugin's
+            // supported layouts and pick the one closest to the host width so
+            // the plugin runs in a configuration it actually accepts.
+            applyBusLayoutForHostChannels();
+
             instance->setRateAndBufferSizeDetails(sr, block);
             instance->prepareToPlay(sr, block);
 
@@ -63,30 +73,50 @@ namespace
 
             // JUCE's processBlock owns the buffer; copy inputs in, run, then
             // copy outputs back out. The buffer is sized to max(in,out) so a
-            // mono->stereo plugin (or vice versa) does not overflow.
+            // mono->stereo plugin (or vice versa) does not overflow. Channels
+            // are mapped host<->plugin so a channel count mismatch (mono
+            // plugin on a stereo bus, or the reverse) still routes audio
+            // correctly instead of leaving one side silent or feeding garbage.
             const int maxCh = juce::jmax(inCh, outCh, 1);
             if (processBuffer.getNumChannels() < maxCh || processBuffer.getNumSamples() < numFrames)
                 processBuffer.setSize(maxCh, juce::jmax(numFrames, processBuffer.getNumSamples()));
 
-            for (int c = 0; c < inCh && c < maxCh; ++c)
+            // Clear the whole working buffer first so channels the plugin does
+            // not write (or that have no host source) come out silent instead
+            // of carrying the previous block's samples.
+            processBuffer.clear();
+
+            const int pluginInCh = instance->getTotalNumInputChannels();
+            const int pluginOutCh = instance->getTotalNumOutputChannels();
+
+            for (int c = 0; c < maxCh; ++c)
             {
-                if (in[c] != nullptr)
-                    std::memcpy(processBuffer.getWritePointer(c), in[c],
+                // Map plugin input channels onto host input channels. Extra
+                // plugin inputs (plugin stereo, host mono) re-read the single
+                // host channel; missing host channels stay silent.
+                const int srcCh = inCh > 0 ? (c % inCh) : 0;
+                if (in != nullptr && srcCh < inCh && in[srcCh] != nullptr)
+                    std::memcpy(processBuffer.getWritePointer(c), in[srcCh],
                                 static_cast<std::size_t>(numFrames) * sizeof(float));
-                else
-                    processBuffer.clear(c, 0, numFrames);
             }
-            for (int c = inCh; c < maxCh; ++c)
-                processBuffer.clear(c, 0, numFrames);
 
             juce::MidiBuffer midi;
             instance->processBlock(processBuffer, midi);
 
-            for (int c = 0; c < outCh && c < maxCh; ++c)
+            // Copy plugin outputs back onto the host output channels. If the
+            // plugin produces fewer channels than the host wants, the extra
+            // host outputs are filled from the last plugin output so a mono
+            // plugin still drives both speakers instead of one going silent.
+            for (int c = 0; c < outCh; ++c)
             {
-                if (out[c] != nullptr)
-                    std::memcpy(out[c], processBuffer.getReadPointer(c),
+                if (out == nullptr || out[c] == nullptr)
+                    continue;
+                const int dstCh = pluginOutCh > 0 ? (c % pluginOutCh) : 0;
+                if (dstCh < processBuffer.getNumChannels())
+                    std::memcpy(out[c], processBuffer.getReadPointer(dstCh),
                                 static_cast<std::size_t>(numFrames) * sizeof(float));
+                else
+                    std::memset(out[c], 0, static_cast<std::size_t>(numFrames) * sizeof(float));
             }
         }
 
@@ -141,6 +171,32 @@ namespace
             // resize so the user can grow non-fixed editors. The wrapping
             // DocumentWindow honors the editor's constrainer either way.
             return true;
+        }
+
+        // Configures the plugin's bus layout to match the host channel count.
+        // Starts from the plugin's current layout, then asks
+        // checkBusesLayoutSupported whether the host-channel configuration is
+        // accepted. If the plugin rejects the exact host layout (some effects
+        // are strictly mono or strictly stereo), the original layout is kept
+        // so the plugin still processes in its preferred configuration and the
+        // process() channel mapping above handles the mismatch.
+        void applyBusLayoutForHostChannels()
+        {
+            if (! instance)
+                return;
+
+            const int hostChannels = juce::jmax(instance->getTotalNumInputChannels(),
+                                                 instance->getTotalNumOutputChannels(),
+                                                 1);
+
+            auto layout = instance->getBusesLayout();
+            for (int bus = 0; bus < layout.inputBuses.size(); ++bus)
+                layout.inputBuses.getReference(bus) = juce::AudioChannelSet::canonicalChannelSet(hostChannels);
+            for (int bus = 0; bus < layout.outputBuses.size(); ++bus)
+                layout.outputBuses.getReference(bus) = juce::AudioChannelSet::canonicalChannelSet(hostChannels);
+
+            if (instance->checkBusesLayoutSupported(layout))
+                instance->setBusesLayout(layout);
         }
 
         std::unique_ptr<juce::Component> createEditorComponent() override

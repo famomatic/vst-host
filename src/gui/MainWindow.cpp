@@ -52,7 +52,6 @@ namespace
         menuSave,
         menuNewEmpty,
         menuPreferences,
-        menuDeviceSelector,
         menuRescan,
         menuExit,
         menuHelpShow,
@@ -266,7 +265,6 @@ juce::PopupMenu MainWindow::getMenuForIndex(int menuIndex, const juce::String&)
         menu.addItem(menuSave, host::i18n::tr("menu.file.save"));
         menu.addItem(menuNewEmpty, host::i18n::tr("menu.file.newEmpty"));
         menu.addSeparator();
-        menu.addItem(menuDeviceSelector, host::i18n::tr("menu.file.audioSettings"));
         menu.addItem(menuPreferences, host::i18n::tr("menu.file.preferences"));
         menu.addSeparator();
         menu.addItem(menuExit, host::i18n::tr("menu.file.exit"));
@@ -298,7 +296,6 @@ void MainWindow::menuItemSelected(int menuItemID, int)
         case menuSave:      saveProject(); break;
         case menuNewEmpty:  initialiseGraph(); break;
         case menuPreferences: openPreferences(); break;
-        case menuDeviceSelector: showDeviceSelector(); break;
         case menuRescan:
             if (pluginScanner)
                 pluginScanner->scanAsync();
@@ -653,9 +650,15 @@ void MainWindow::openPluginSettings(host::graph::GraphEngine::NodeId id)
                 // resize loop, so editors stop shrinking on focus loss and
                 // stop clipping async resizes on open.
                 const bool editorResizable = plugin->isEditorResizable();
+                // Pass the graph + node id so the editor window auto-closes if
+                // the plugin node is removed from the graph while the editor
+                // is still open. This prevents use-after-free crashes when the
+                // node is deleted out from under the open editor.
                 new host::gui::PluginEditorWindow(juce::String(vstNode->name()),
                                                  std::move(editor),
-                                                 editorResizable);
+                                                 editorResizable,
+                                                 graphEngine,
+                                                 id);
                 return;
             }
         }
@@ -729,19 +732,5 @@ void MainWindow::openPreferences()
     options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
     options.resizable = true;
-    options.runModal();
-}
-
-void MainWindow::showDeviceSelector()
-{
-    juce::AudioDeviceSelectorComponent selector(deviceManager, 0, 2, 0, 2, true, true, true, false);
-    selector.setSize(500, 400);
-
-    juce::DialogWindow::LaunchOptions options;
-    options.content.setNonOwned(&selector);
-    options.dialogTitle = host::i18n::tr("dialog.audioSettings.title");
-    options.componentToCentreAround = this;
-    options.useNativeTitleBar = true;
-    options.resizable = false;
     options.runModal();
 }
