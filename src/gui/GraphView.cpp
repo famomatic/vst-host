@@ -197,7 +197,11 @@ public:
         // can be scaled by the graph zoom. ComponentDragger works in pixels,
         // which would move nodes too fast when zoomed in.
         dragStartWorld_ = owner.getNodePosition(nodeId);
-        dragStartMouse_ = event.position;
+        // getOffsetFromDragStart() is screen-relative, so it stays stable as
+        // the component moves. Using event.position (component-local) would
+        // create a feedback loop: moving the node shifts the local origin, so
+        // the same screen position reports a different local position each
+        // frame, producing the stutter / under-movement the user saw.
         dragger.startDraggingComponent(this, event);
     }
 
@@ -215,10 +219,12 @@ public:
 
         if (draggingNode)
         {
-            // Move by the mouse delta expressed in world units (pixels / zoom)
-            // so the node tracks the cursor 1:1 regardless of zoom level.
+            // Move by the screen-space drag offset converted to world units
+            // (pixels / zoom) so the node tracks the cursor 1:1 regardless of
+            // zoom level. Using getOffsetFromDragStart avoids the local-frame
+            // feedback loop that caused stuttery, under-sized movement.
             const float z = owner.getZoom();
-            const auto delta = (event.position - dragStartMouse_) / z;
+            const auto delta = event.getOffsetFromDragStart().toFloat() / z;
             juce::Point<float> newWorld { dragStartWorld_.x + delta.x,
                                            dragStartWorld_.y + delta.y };
             newWorld.x = std::max(0.0f, newWorld.x);
@@ -286,7 +292,6 @@ private:
     bool draggingConnection { false };
     bool draggingNode { false };
     juce::Point<float> dragStartWorld_ {};
-    juce::Point<float> dragStartMouse_ {};
 };
 
 GraphView::GraphView()

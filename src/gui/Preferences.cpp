@@ -408,13 +408,14 @@ namespace host::gui
         const auto rowHeight = 48;
         const auto controlInset = 6;
 
-        // Reserve space for the host-engine rows (resampler, PDC, control
-        // panel) at the bottom first, then give the rest to the device
-        // selector viewport so it never pushes those rows off-screen.
-        const int reservedBottom = rowHeight * 3 + 8 * 3 + 12;
-        auto selectorArea = area.withTrimmedBottom(reservedBottom).reduced(controlInset);
+        // Layout top-to-bottom so each region consumes its own slice of the
+        // tab and nothing overlaps. Previously withTrimmedBottom returned a
+        // copy and left `area` untouched, so the selector and the engine rows
+        // were stacked on top of each other.
+        const int selectorHeight = juce::jlimit(220, 420, area.getHeight() / 2);
         if (deviceSelectorViewport != nullptr)
         {
+            auto selectorArea = area.removeFromTop(selectorHeight).reduced(controlInset);
             deviceSelectorViewport->setBounds(selectorArea);
             // Let the selector use its preferred width and at least the
             // viewport's height so short selectors do not leave a gap.
@@ -426,8 +427,7 @@ namespace host::gui
                 deviceSelector->setSize(juce::jmax(prefW, selectorArea.getWidth()), prefH);
             }
         }
-        area.removeFromBottom(reservedBottom);
-        area.removeFromTop(8);
+        area.removeFromTop(12);
 
         auto layoutRow = [&](juce::Label& label, juce::Component& field)
         {
