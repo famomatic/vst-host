@@ -78,7 +78,13 @@ namespace host::audio
         {
             graph->setPdcEnabled(appliedConfig.pdcEnabled);
             graph->setEngineFormat(appliedConfig.sampleRate, appliedConfig.blockSize);
-            graph->prepare();
+            // Do NOT call graph->prepare() here. setEngineConfig can be invoked
+            // from the preferences change callback while a background session
+            // restore is rebuilding the graph on another thread; calling
+            // prepare() concurrently with that rebuild caused an access
+            // violation when opening Preferences. The graph is (re)prepared
+            // on audioDeviceAboutToStart and whenever the graph topology
+            // changes, which covers the legitimate cases.
         }
     }
 
@@ -189,6 +195,16 @@ namespace host::audio
         info.inputChannels = device->getActiveInputChannels().countNumberOfSetBits();
         info.outputChannels = device->getActiveOutputChannels().countNumberOfSetBits();
         setDeviceInfo(info);
+
+        // The device (re)start is the safe moment to prepare the graph: it
+        // happens on the device thread before audio runs, and is not racing
+        // with a background session restore the way a preferences change
+        // callback would. setEngineFormat above invalidated the runtime, so we
+        // rebuild it here.
+        if (auto graph = graphEngine.load())
+        {
+            graph->prepare();
+        }
     }
 
     void DeviceEngine::audioDeviceStopped()

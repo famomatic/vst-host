@@ -797,5 +797,8 @@ void MainWindow::openPreferences()
     options.componentToCentreAround = this;
     options.useNativeTitleBar = true;
     options.resizable = true;
-    options.runModal();
+    // launchAsync (rather than runModal) lets JUCE own the dialog lifetime, so
+    // the PreferencesComponent is destroyed only after the dialog fully closes
+    // and no device-manager change callback can race with teardown.
+    options.launchAsync();
 }
