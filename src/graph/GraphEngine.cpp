@@ -535,6 +535,7 @@ int GraphEngine::process(juce::AudioBuffer<float>& buffer, const std::uint64_t* 
                     if (++writePos >= delay)
                         writePos = 0;
                 }
+                runtimeNode.pdcWritePos = writePos;
             }
         }
 
