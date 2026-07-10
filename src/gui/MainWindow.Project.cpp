@@ -60,7 +60,12 @@ bool MainWindow::loadStartupGraph()
     // rebuildGraphFromProject), so the baseline input -> output graph keeps
     // passing audio until the very end of the load, when the prepared nodes
     // are swapped in in one quick pass.
-    std::thread([this, fileToLoadCopy, isPresetCopy]()
+    // The thread is a member (sessionLoadThread_) so the destructor can join
+    // it, preventing use-after-free if the user quits mid-load.
+    if (sessionLoadThread_.joinable())
+        sessionLoadThread_.join();
+
+    sessionLoadThread_ = std::thread([this, fileToLoadCopy, isPresetCopy]()
     {
         const bool ok = loadProjectFromFile(fileToLoadCopy);
 
@@ -74,7 +79,7 @@ bool MainWindow::loadStartupGraph()
             }
             graphView.refreshGraph(false);
         });
-    }).detach();
+    });
 
     return true;
 }
@@ -127,6 +132,12 @@ void MainWindow::rebuildGraphFromProject(const host::persist::Project& project)
 {
     if (! graphEngine)
         return;
+
+    // Serialise rebuilds so a background startup load and a user-triggered
+    // Open Project cannot interleave their clear/add/connect/prepare sequences
+    // and corrupt the graph. Individual GraphEngine calls are mutex-protected,
+    // but the sequence itself must be atomic.
+    std::lock_guard<std::mutex> rebuildLock(graphRebuildMutex_);
 
     const auto engineConfig = deviceEngine.getEngineConfig();
 

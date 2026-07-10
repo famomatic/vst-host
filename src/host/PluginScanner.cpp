@@ -175,8 +175,11 @@ namespace host::plugin
     void PluginScanner::cancelScan()
     {
         cancelRequested.store(true);
-        scanning.store(false);
+        // Join the worker before clearing the scanning flag so scanAsync
+        // cannot observe a false scanning value while the worker is still
+        // running sendChangeMessage and start a second concurrent scan.
         joinWorkerIfRunning();
+        scanning.store(false);
     }
 
     std::vector<PluginInfo> PluginScanner::getDiscoveredPlugins() const

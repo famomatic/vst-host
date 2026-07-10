@@ -160,7 +160,6 @@ MainWindow::MainWindow()
     loadConfiguration();
 
     deviceEngine.setGraph(graphEngine);
-    deviceEngine.setEngineConfig({ 48000.0, 256 });
 
     // Restore the saved audio device state if we have one; otherwise let JUCE
     // pick sensible defaults (last arg = true).
@@ -241,11 +240,24 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+    // Join the background session-load thread before touching any member it
+    // captures via `this`. Without this, quitting during a slow plugin load
+    // would leave the thread dereferencing destroyed members.
+    if (sessionLoadThread_.joinable())
+        sessionLoadThread_.join();
+
     saveLastSession();
     saveConfiguration();
     host::i18n::manager().removeChangeListener(this);
-    if (pluginScanner && pluginCacheFile.getFullPathName().isNotEmpty())
-        pluginScanner->saveCache(pluginCacheFile);
+    // Cancel any in-flight scan and join the worker before saving the cache.
+    // Without this the worker thread could be writing the cache file
+    // concurrently with the save below, corrupting it.
+    if (pluginScanner)
+    {
+        pluginScanner->cancelScan();
+        if (pluginCacheFile.getFullPathName().isNotEmpty())
+            pluginScanner->saveCache(pluginCacheFile);
+    }
     trayIcon.reset();
     setMenuBar(nullptr);
     deviceManager.removeAudioCallback(&deviceEngine);

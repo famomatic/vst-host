@@ -33,6 +33,9 @@ private:
     juce::SmoothedValue<float> gainSmoothed_;
     ParameterQueue queue_;
     std::vector<ParameterQueue::Entry> drained_;
+    // Pre-computed per-sample gain ramp, applied identically to every channel
+    // so L/R stay perfectly aligned during a ramp (no stereo drift).
+    std::vector<float> rampBuffer_;
     // Index layout: 0=gain
     static constexpr int kParamCount = 1;
 };

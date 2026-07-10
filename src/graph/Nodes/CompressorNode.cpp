@@ -24,6 +24,13 @@ namespace host::graph::nodes
                                       static_cast<juce::uint32>(std::max(1, blockSize)),
                                       2 };
         compressor_.prepare(spec);
+        // Per-channel compressors use a single-channel spec so each channel
+        // is gain-reduced independently when stereoLink is off.
+        juce::dsp::ProcessSpec monoSpec { sampleRate > 0.0 ? sampleRate : 44100.0,
+                                          static_cast<juce::uint32>(std::max(1, blockSize)),
+                                          1 };
+        for (auto& c : perChannelCompressors_)
+            c.prepare(monoSpec);
         queue_.prepare(static_cast<int>(kParamIds.size()) * 2);
         drained_.reserve(kParamIds.size() * 2);
         applyConfig();
@@ -61,9 +68,30 @@ namespace host::graph::nodes
                 juce::FloatVectorOperations::clear(dest, frames);
         }
 
-        juce::dsp::AudioBlock<float> block(ctx.outputChannels, static_cast<size_t>(outputs), static_cast<size_t>(frames));
-        juce::dsp::ProcessContextReplacing<float> context(block);
-        compressor_.process(context);
+        if (stereoLink_.load())
+        {
+            // Linked: process all channels as one block so the sidechain sees
+            // every channel (classic stereo-linked compression).
+            juce::dsp::AudioBlock<float> block(ctx.outputChannels, static_cast<size_t>(outputs), static_cast<size_t>(frames));
+            juce::dsp::ProcessContextReplacing<float> context(block);
+            compressor_.process(context);
+        }
+        else
+        {
+            // Unlinked: compress each channel independently so L and R react
+            // to their own level, not the combined stereo sum.
+            for (int ch = 0; ch < std::min(outputs, 2); ++ch)
+            {
+                float* dest = ctx.outputChannels[ch];
+                if (dest == nullptr)
+                    continue;
+
+                float* channelPtr = dest;
+                juce::dsp::AudioBlock<float> block(&channelPtr, 1, static_cast<size_t>(frames));
+                juce::dsp::ProcessContextReplacing<float> context(block);
+                perChannelCompressors_[static_cast<size_t>(ch)].process(context);
+            }
+        }
     }
 
     void CompressorNode::pushChange(int index, double value)
@@ -114,6 +142,13 @@ namespace host::graph::nodes
         compressor_.setRatio(ratio_.load());
         compressor_.setAttack(attack_.load());
         compressor_.setRelease(release_.load());
+        for (auto& c : perChannelCompressors_)
+        {
+            c.setThreshold(threshold_.load());
+            c.setRatio(ratio_.load());
+            c.setAttack(attack_.load());
+            c.setRelease(release_.load());
+        }
         dirty_ = false;
     }
 

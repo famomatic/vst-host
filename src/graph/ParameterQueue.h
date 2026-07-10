@@ -55,31 +55,21 @@ public:
         if (ring_.empty())
             return; // not prepared yet - message-thread fallback handled by caller
 
-        // Note: we deliberately do NOT scan the ring to coalesce an existing
-        // entry for the same id. The audio thread drains [head_, tail_) and a
-        // concurrent in-place write of value from the message thread would
-        // race the audio thread's read, producing a torn double. Instead we
-        // always enqueue a fresh entry; the ring is sized generously (see
-        // prepare) so rapid UI dragging does not overflow, and when it does
-        // overflow the oldest entry is dropped so the freshest value for
-        // this id still wins on the next drain.
+        // We do NOT scan the ring to coalesce an existing entry for the same
+        // id: the audio thread drains [head_, tail_) and a concurrent in-place
+        // write of value from the message thread would race the audio thread's
+        // read, producing a torn double. Instead we always enqueue a fresh
+        // entry. When the ring is full we DROP the new value rather than
+        // advancing head_ from the producer side (which would race the audio
+        // thread's head_ read/write). The ring is sized generously (see
+        // prepare, min 128) so overflow is extremely unlikely under normal
+        // use; the next push will succeed once the audio thread drains.
         const auto t = tail_.load(std::memory_order_relaxed);
         const auto h = head_.load(std::memory_order_acquire);
 
         const auto next = (t + 1) % capacity_;
         if (next == h)
-        {
-            // Full: overwrite the oldest. This loses a change but keeps the
-            // freshest for this id, which is what matters for live tweaking.
-            // head_ is only advanced by the audio thread, so this advance here
-            // is safe from the producer side; the audio thread will simply see
-            // the updated head on its next drain.
-            const auto newHead = (h + 1) % capacity_;
-            ring_[t] = { idHash, value };
-            head_.store(newHead, std::memory_order_release);
-            tail_.store(next, std::memory_order_release);
             return;
-        }
 
         ring_[t] = { idHash, value };
         tail_.store(next, std::memory_order_release);

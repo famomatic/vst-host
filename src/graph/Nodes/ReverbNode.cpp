@@ -21,6 +21,8 @@ namespace host::graph::nodes
     {
         juce::ignoreUnused(blockSize);
         reverb_.setSampleRate(sampleRate > 0.0 ? sampleRate : 44100.0);
+        // Pre-allocate the mono scratch buffer so process() never allocates.
+        monoScratch_.assign(static_cast<size_t>(std::max(1, blockSize)), 0.0f);
         queue_.prepare(ReverbNode::kParamCount * 2);
         drained_.reserve(ReverbNode::kParamCount * 2);
         applyParameters();
@@ -64,8 +66,12 @@ namespace host::graph::nodes
         }
         else if (outputs == 1 && ctx.outputChannels[0] != nullptr)
         {
-            std::vector<float> temp(static_cast<size_t>(frames), 0.0f);
-            reverb_.processStereo(ctx.outputChannels[0], temp.data(), frames);
+            // Reuse the pre-allocated scratch (no allocation on audio thread).
+            if (static_cast<int>(monoScratch_.size()) < frames)
+                monoScratch_.assign(static_cast<size_t>(frames), 0.0f);
+            else
+                std::fill_n(monoScratch_.data(), static_cast<size_t>(frames), 0.0f);
+            reverb_.processStereo(ctx.outputChannels[0], monoScratch_.data(), frames);
         }
     }
 

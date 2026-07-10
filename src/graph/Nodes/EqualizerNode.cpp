@@ -60,8 +60,9 @@ namespace
         juce::ignoreUnused(blockSize);
         preparedSampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
         juce::dsp::ProcessSpec spec { preparedSampleRate_, static_cast<juce::uint32>(std::max(1, blockSize)), 2 };
-        for (auto& f : filters_)
-            f.prepare(spec);
+        for (auto& bandFilters : filters_)
+            for (auto& f : bandFilters)
+                f.prepare(spec);
         queue_.prepare(static_cast<int>(kBandCount) * 4 * 2);
         drained_.reserve(static_cast<size_t>(kBandCount) * 4 * 2);
         updateFilters();
@@ -104,7 +105,9 @@ namespace
                     float* channelPtr = dest;
                     juce::dsp::AudioBlock<float> block(&channelPtr, 1, static_cast<size_t>(frames));
                     juce::dsp::ProcessContextReplacing<float> context(block);
-                    filters_[static_cast<size_t>(b)].process(context);
+                    // Use the per-channel filter so L/R keep independent state.
+                    const int filterCh = std::min(ch, kMaxChannels - 1);
+                    filters_[static_cast<size_t>(b)][static_cast<size_t>(filterCh)].process(context);
                }
            }
         }
@@ -115,23 +118,28 @@ namespace
         for (int b = 0; b < kBandCount; ++b)
         {
             const auto& band = bands_[static_cast<size_t>(b)];
+            // Disabled or unity-gain bands get unity (passthrough) coefficients
+            // so process() never applies stale non-unity coefficients. reset()
+            // alone only clears the delay-line state, not the coefficients.
+            juce::dsp::IIR::Coefficients<float>::Ptr coeffs;
             if (! band.enabled || band.gainDb == 0.0f)
             {
-                filters_[static_cast<size_t>(b)].reset();
-                continue;
-            }
-
-            juce::dsp::IIR::Coefficients<float>::Ptr coeffs;
-            if (band.gainDb > 0.0f)
-            {
-                coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter(preparedSampleRate_, band.frequency, band.q, juce::Decibels::decibelsToGain(band.gainDb));
+                // (1, 0, 1, 0) = y[n] = x[n] (unity). Matches JUCE default.
+                coeffs = juce::dsp::IIR::Coefficients<float>::Ptr(
+                    new juce::dsp::IIR::Coefficients<float>(1, 0, 1, 0));
             }
             else
             {
-                coeffs = juce::dsp::IIR::Coefficients<float>::makeNotch(preparedSampleRate_, band.frequency, band.q);
-                coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter(preparedSampleRate_, band.frequency, band.q, juce::Decibels::decibelsToGain(band.gainDb));
+                // makePeakFilter handles both boost (gain > 1) and cut (gain < 1).
+                coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter(
+                    preparedSampleRate_, band.frequency, band.q,
+                    juce::Decibels::decibelsToGain(band.gainDb));
             }
-            filters_[static_cast<size_t>(b)].coefficients = coeffs;
+            for (auto& f : filters_[static_cast<size_t>(b)])
+            {
+                f.coefficients = coeffs;
+                f.reset();
+            }
         }
         dirty_ = false;
     }

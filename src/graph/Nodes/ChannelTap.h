@@ -5,6 +5,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <vector>
 
@@ -41,7 +42,7 @@ namespace host::graph::nodes
                 return;
             }
 
-            const int sourceChannel = std::clamp(channel_, 0, inputs - 1);
+            const int sourceChannel = std::clamp(channel_.load(), 0, inputs - 1);
             const auto* source = context.inputChannels[sourceChannel];
 
             for (int outCh = 0; outCh < outputs; ++outCh)
@@ -63,8 +64,9 @@ namespace host::graph::nodes
 
         std::vector<NodeParameter> getParameters() const override
         {
-            return { NodeParameter { "channel", "Channel", static_cast<double>(channel_), 0.0, 31.0,
-                                     static_cast<double>(channel_), false } };
+            const int ch = channel_.load();
+            return { NodeParameter { "channel", "Channel", static_cast<double>(ch), 0.0, 31.0,
+                                     static_cast<double>(ch), false } };
         }
 
         void setParameters(const std::vector<NodeParameter>& parameters) override
@@ -72,11 +74,11 @@ namespace host::graph::nodes
             for (const auto& p : parameters)
             {
                 if (p.id == "channel")
-                    channel_ = std::clamp(static_cast<int>(p.value), 0, 31);
+                    channel_.store(std::clamp(static_cast<int>(p.value), 0, 31));
             }
         }
 
     private:
-        int channel_ { 0 };
+        std::atomic<int> channel_ { 0 };
     };
 }

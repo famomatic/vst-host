@@ -12,6 +12,10 @@
 #include "persist/Config.h"
 #include "persist/Project.h"
 
+#include <atomic>
+#include <thread>
+#include <mutex>
+
 namespace host::gui
 {
 class ConsoleWindow;
@@ -92,4 +96,13 @@ private:
     juce::File configFile;
     juce::File pluginCacheFile;
     juce::File lastSessionFile;
+
+    // Background session/preset load thread. Owned so the destructor can join
+    // it before tearing down graphEngine/deviceEngine/graphView, preventing
+    // use-after-free if the user quits during a slow plugin-load.
+    std::thread sessionLoadThread_;
+    // Serialises rebuildGraphFromProject so a background startup load and a
+    // user-triggered Open Project cannot interleave their clear/add/connect
+    // sequences and corrupt the graph.
+    std::mutex graphRebuildMutex_;
 };

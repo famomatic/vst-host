@@ -27,7 +27,12 @@ namespace host::persist
             // old configs still load cleanly.
             if (engineSettings.resamplerQuality <= 0)
                 engineSettings.resamplerQuality = 2;
-            engineSettings.pdcEnabled = static_cast<bool>(object->getProperty("pdcEnabled"));
+            // Only override the default (true) when the key is actually
+            // present. A missing key returns void, and static_cast<bool>(void)
+            // would silently set pdcEnabled to false instead of keeping the
+            // default.
+            if (auto pdcVar = object->getProperty("pdcEnabled"); ! pdcVar.isVoid())
+                engineSettings.pdcEnabled = static_cast<bool>(pdcVar);
 
             pluginDirectories.clear();
             if (auto* arr = object->getProperty("pluginDirectories").getArray())

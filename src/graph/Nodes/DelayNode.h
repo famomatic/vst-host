@@ -8,6 +8,7 @@
 #include <atomic>
 #include <array>
 #include <string>
+#include <vector>
 
 namespace host::graph::nodes
 {
@@ -31,7 +32,9 @@ private:
     void updateDelaySamples();
     void pushChange(int index, double value);
 
-    std::array<juce::dsp::DelayLine<float>, 2> delays_ { juce::dsp::DelayLine<float> { 1 << 20 }, juce::dsp::DelayLine<float> { 1 << 20 } };
+    // One delay line per channel so >2-channel configurations do not share
+    // state (which would cause feedback cross-talk). Sized in prepare().
+    std::vector<juce::dsp::DelayLine<float>> delays_;
     std::atomic<float> timeMs_ { 250.0f };
     std::atomic<float> feedback_ { 0.3f };
     std::atomic<float> mix_ { 0.5f };
@@ -41,6 +44,9 @@ private:
     // Sample-level smoothing for the wet/dry coefficient so a mix change
     // doesn't click. Feedback and delay-time are block-boundary safe.
     juce::SmoothedValue<float> mixSmoothed_;
+    // Pre-computed per-sample mix ramp, applied identically to every channel
+    // so L/R stay perfectly aligned during a ramp (no stereo drift).
+    std::vector<float> mixRampBuffer_;
     ParameterQueue queue_;
     std::vector<ParameterQueue::Entry> drained_;
     // Index layout: 0=time,1=feedback,2=mix

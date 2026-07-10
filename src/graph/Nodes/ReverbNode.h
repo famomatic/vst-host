@@ -43,6 +43,9 @@ private:
     bool dirty_ { true };
     ParameterQueue queue_;
     std::vector<ParameterQueue::Entry> drained_;
+    // Pre-allocated scratch for the mono->stereo reverb path so process()
+    // never allocates on the audio thread.
+    std::vector<float> monoScratch_;
     // Index layout: 0=roomSize,1=damping,2=wet,3=dry,4=width,5=freeze
     static constexpr int kParamCount = 6;
 };

@@ -17,6 +17,7 @@ void GainNode::prepare(double sampleRate, int blockSize)
     (void) blockSize;
     gainSmoothed_.reset(sampleRate > 0.0 ? sampleRate : 44100.0, 0.02); // ~20 ms ramp
     gainSmoothed_.setCurrentAndTargetValue(gain_.load());
+    rampBuffer_.assign(static_cast<size_t>(std::max(1, blockSize)), 0.0f);
     queue_.prepare(GainNode::kParamCount * 2);
     drained_.reserve(GainNode::kParamCount * 2);
 }
@@ -36,6 +37,14 @@ void GainNode::process(ProcessContext& ctx)
 
     if (frames == 0 || outputs == 0 || ctx.outputChannels == nullptr)
         return;
+
+    // Compute the ramp once for this block so every channel gets identical
+    // per-sample gain values (no L/R drift). Previously getNextValue() was
+    // called inside the per-channel loop, so ch1 advanced the ramp further.
+    if (static_cast<int>(rampBuffer_.size()) < frames)
+        rampBuffer_.resize(static_cast<size_t>(frames));
+    for (int i = 0; i < frames; ++i)
+        rampBuffer_[static_cast<size_t>(i)] = gainSmoothed_.getNextValue();
 
     for (int outCh = 0; outCh < outputs; ++outCh)
     {
@@ -60,7 +69,7 @@ void GainNode::process(ProcessContext& ctx)
         }
 
         for (int i = 0; i < frames; ++i)
-            dest[i] *= gainSmoothed_.getNextValue();
+            dest[i] *= rampBuffer_[static_cast<size_t>(i)];
     }
 }
 

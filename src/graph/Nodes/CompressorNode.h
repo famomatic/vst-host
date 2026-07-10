@@ -30,6 +30,9 @@ private:
     void pushChange(int index, double value);
 
     juce::dsp::Compressor<float> compressor_;
+    // Per-channel compressors used when stereoLink is off so each channel
+    // is gain-reduced independently.
+    std::array<juce::dsp::Compressor<float>, 2> perChannelCompressors_;
     std::atomic<float> threshold_ { -20.0f };
     std::atomic<float> ratio_ { 4.0f };
     std::atomic<float> attack_ { 10.0f };

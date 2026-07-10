@@ -17,6 +17,9 @@ class EqualizerNode : public Node
 {
 public:
     static constexpr int kBandCount = 4;
+    /// Maximum channels each band filter must handle independently so L/R
+    /// (and beyond) never share IIR delay-line state.
+    static constexpr int kMaxChannels = 2;
 
     struct Band
     {
@@ -46,8 +49,10 @@ private:
     int parameterIndex(const std::string& id) const;
 
     std::array<Band, kBandCount> bands_;
-    std::array<juce::dsp::IIR::Filter<float>, kBandCount> filters_;
+    // Per-band, per-channel filter so each channel keeps its own IIR state.
+    std::array<std::array<juce::dsp::IIR::Filter<float>, kMaxChannels>, kBandCount> filters_;
     double preparedSampleRate_ { 44100.0 };
+    int preparedChannels_ { kMaxChannels };
     bool dirty_ { true };
     ParameterQueue queue_;
     std::vector<ParameterQueue::Entry> drained_;

@@ -21,6 +21,15 @@ namespace host::graph::nodes
     {
         preparedSampleRate_ = sampleRate > 0.0 ? sampleRate : 44100.0;
         juce::dsp::ProcessSpec spec { preparedSampleRate_, static_cast<juce::uint32>(std::max(1, blockSize)), 2 };
+        // Ensure we have enough delay lines for at least 2 channels; prepare
+        // is called with the engine block size which may vary.
+        if (delays_.size() < 2)
+        {
+            delays_.clear();
+            delays_.reserve(2);
+            for (int i = 0; i < 2; ++i)
+                delays_.emplace_back(1 << 20);
+        }
         for (auto& d : delays_)
         {
             d.prepare(spec);
@@ -28,6 +37,7 @@ namespace host::graph::nodes
         }
         mixSmoothed_.reset(preparedSampleRate_, 0.02); // ~20 ms ramp
         mixSmoothed_.setCurrentAndTargetValue(std::clamp(mix_.load(), 0.0f, 1.0f));
+        mixRampBuffer_.assign(static_cast<size_t>(std::max(1, blockSize)), 0.0f);
         queue_.prepare(DelayNode::kParamCount * 2);
         drained_.reserve(DelayNode::kParamCount * 2);
         updateDelaySamples();
@@ -52,6 +62,15 @@ namespace host::graph::nodes
         // sample so a macro/preset switch doesn't click at the wet/dry edge.
         mixSmoothed_.setTargetValue(std::clamp(mix_.load(), 0.0f, 1.0f));
 
+        // Compute the mix ramp once for this block so every channel gets
+        // identical per-sample wet values (no L/R drift). Previously each
+        // channel advanced the ramp independently and the "reset" trick did
+        // not actually restart the ramp from the beginning.
+        if (static_cast<int>(mixRampBuffer_.size()) < frames)
+            mixRampBuffer_.resize(static_cast<size_t>(frames));
+        for (int i = 0; i < frames; ++i)
+            mixRampBuffer_[static_cast<size_t>(i)] = mixSmoothed_.getNextValue();
+
         for (int ch = 0; ch < outputs; ++ch)
         {
             float* dest = ctx.outputChannels[ch];
@@ -68,21 +87,19 @@ namespace host::graph::nodes
                 continue;
             }
 
-            auto& delay = delays_[static_cast<size_t>(ch % 2)];
+            const size_t delayIdx = delays_.empty() ? 0 : static_cast<size_t>(ch) % delays_.size();
+            auto& delay = delays_[delayIdx];
 
             for (int i = 0; i < frames; ++i)
             {
                 const float input = src[i];
                 const float delayed = delay.popSample(0);
-                const float wet = mixSmoothed_.getNextValue();
+                const float wet = mixRampBuffer_[static_cast<size_t>(i)];
                 const float dry = 1.0f - wet;
                 const float output = input * dry + delayed * wet;
                 dest[i] = output;
                 delay.pushSample(0, output + delayed * feedback);
             }
-            // Re-run the ramp for subsequent channels so each channel starts
-            // from the current target rather than the just-finished ramp end.
-            mixSmoothed_.setTargetValue(mixSmoothed_.getTargetValue());
         }
     }
 
